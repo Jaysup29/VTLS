@@ -1,0 +1,34 @@
+{
+  "branchName": "Sample Branch",
+  "entries": [
+    {
+      "id": "sample001",
+      "date": "2026-04-15",
+      "ptNo": "12345",
+      "itemDescription": "18k gold ring, 3.2g",
+      "principalAmount": 5000.00,
+      "transactionType": "NP",
+      "signature": "JDR"
+    },
+    {
+      "id": "sample002",
+      "date": "2026-04-16",
+      "ptNo": "12346",
+      "itemDescription": "Gold necklace, 10g",
+      "principalAmount": 15000.00,
+      "transactionType": "Ren",
+      "signature": "MRS"
+    }
+  ],
+  "exits": [
+    {
+      "id": "sample003",
+      "ptNo": "12340",
+      "loanDate": "2026-03-10",
+      "itemDescription": "Silver bracelet, 8g",
+      "principalAmount": 2500.00,
+      "transactionType": "Red",
+      "timeOfTransaction": "14:30"
+    }
+  ]
+}

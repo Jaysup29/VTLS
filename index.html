@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Vault Transaction Ledger</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,600;0,9..144,700;1,9..144,400&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<header class="app-header no-print">
+  <div class="header-row">
+    <div class="brand">
+      <h1>Vault Transaction Ledger</h1>
+      <span class="sub">Prenda · Renewal · Redemption · Re-appraisal</span>
+    </div>
+    <div class="toolbar">
+      <button id="btnNew" title="Start a fresh database">New</button>
+      <button id="btnOpen" title="Open an existing .json database file">Open…</button>
+      <button id="btnSave" class="primary" title="Save to current file (Ctrl+S)">Save</button>
+      <button id="btnSaveAs" title="Save to a new file">Save As…</button>
+      <button id="btnExport" title="Download a copy as JSON">Export</button>
+    </div>
+  </div>
+</header>
+
+<div class="branch-bar no-print">
+  <label for="branchName">Branch Name</label>
+  <input id="branchName" type="text" placeholder="Enter branch name…" autocomplete="off">
+  <label for="userName">User Name</label>
+  <input id="userName" type="text" placeholder="Enter user name…" autocomplete="off">
+  <div class="status-indicator" id="statusIndicator">
+    <span class="dot"></span>
+    <span id="statusText">No file loaded · autosaved locally</span>
+  </div>
+</div>
+
+<nav class="tabs no-print">
+  <button class="active" data-tab="dashboard">
+    Dashboard
+  </button>
+  <button data-tab="entry">
+    Vault Entry <span class="sub">(Prenda)</span> <span class="count" id="entryCount">0</span>
+  </button>
+  <button data-tab="exit">
+    Vault Exit <span class="sub">(Ren / Red / Re-app)</span> <span class="count" id="exitCount">0</span>
+  </button>
+</nav>
+
+<main>
+
+<!-- =========== DASHBOARD TAB =========== -->
+<section id="dashboardPanel" class="tab-panel active">
+  <div class="dash-filter-bar no-print">
+    <div class="dash-title">
+      <h2>Overview</h2>
+      <span class="dash-subtitle" id="dashSubtitle">All time</span>
+    </div>
+    <div class="dash-controls">
+      <label for="dashRange">Time Range</label>
+      <select id="dashRange">
+        <option value="all" selected>All time</option>
+        <option value="today">Today</option>
+        <option value="7d">Last 7 days</option>
+        <option value="30d">Last 30 days</option>
+        <option value="month">This month</option>
+        <option value="year">This year</option>
+      </select>
+    </div>
+  </div>
+
+  <!-- KPI CARDS -->
+  <div class="kpi-grid">
+    <div class="kpi-card" data-kind="entries">
+      <div class="kpi-label">Total Entries</div>
+      <div class="kpi-value" id="kpiEntries">0</div>
+      <div class="kpi-sub" id="kpiEntriesSub">transactions</div>
+    </div>
+    <div class="kpi-card" data-kind="exits">
+      <div class="kpi-label">Total Exits</div>
+      <div class="kpi-value" id="kpiExits">0</div>
+      <div class="kpi-sub" id="kpiExitsSub">transactions</div>
+    </div>
+    <div class="kpi-card" data-kind="in">
+      <div class="kpi-label">Principal In</div>
+      <div class="kpi-value numeric"><span class="currency">₱</span><span id="kpiIn">0.00</span></div>
+      <div class="kpi-sub">total entries value</div>
+    </div>
+    <div class="kpi-card" data-kind="out">
+      <div class="kpi-label">Principal Out</div>
+      <div class="kpi-value numeric"><span class="currency">₱</span><span id="kpiOut">0.00</span></div>
+      <div class="kpi-sub">total exits value</div>
+    </div>
+    <div class="kpi-card" data-kind="net">
+      <div class="kpi-label">Net Movement</div>
+      <div class="kpi-value numeric"><span class="currency" id="kpiNetSign">₱</span><span id="kpiNet">0.00</span></div>
+      <div class="kpi-sub" id="kpiNetSub">in minus out</div>
+    </div>
+    <div class="kpi-card" data-kind="active">
+      <div class="kpi-label">Active Pawns</div>
+      <div class="kpi-value" id="kpiActive">0</div>
+      <div class="kpi-sub">still in vault (all time)</div>
+    </div>
+  </div>
+
+  <!-- CHART ROW: Donuts -->
+  <div class="chart-row">
+    <div class="chart-card">
+      <div class="chart-header">
+        <h3>Entry Transaction Types</h3>
+        <span class="chart-sub" id="donutEntryTotal">0 total</span>
+      </div>
+      <div class="donut-wrap">
+        <svg class="donut" viewBox="0 0 200 200" id="donutEntry" role="img" aria-label="Entry type breakdown"></svg>
+        <div class="donut-legend" id="donutEntryLegend"></div>
+      </div>
+    </div>
+    <div class="chart-card">
+      <div class="chart-header">
+        <h3>Exit Transaction Types</h3>
+        <span class="chart-sub" id="donutExitTotal">0 total</span>
+      </div>
+      <div class="donut-wrap">
+        <svg class="donut" viewBox="0 0 200 200" id="donutExit" role="img" aria-label="Exit type breakdown"></svg>
+        <div class="donut-legend" id="donutExitLegend"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- LINE CHART -->
+  <div class="chart-card full">
+    <div class="chart-header">
+      <h3>Daily Volume Trend</h3>
+      <div class="chart-toggle">
+        <button class="toggle-btn active" data-metric="count">Count</button>
+        <button class="toggle-btn" data-metric="amount">Amount</button>
+      </div>
+    </div>
+    <svg class="line-chart" id="lineChart" viewBox="0 0 900 280" preserveAspectRatio="none" role="img" aria-label="Daily trend"></svg>
+    <div class="chart-legend-inline">
+      <span class="swatch-inline entry"></span> Entries
+      <span class="swatch-inline exit"></span> Exits
+    </div>
+  </div>
+
+  <!-- ACTIVE PAWNS TABLE -->
+  <div class="table-section">
+    <div class="table-header no-print">
+      <h3 class="table-title">Active Pawns <span class="count" id="activeCount">0</span></h3>
+      <div class="table-controls">
+        <input type="search" class="search-input" id="activeSearch" placeholder="Search active pawns…">
+        <button class="btn btn-secondary" id="activePrintBtn">🖨 Print</button>
+      </div>
+    </div>
+    <div class="ledger-wrap">
+      <table class="ledger" id="activeTable">
+        <thead>
+          <tr>
+            <th>PT No.</th>
+            <th>Entry Date</th>
+            <th>Item Description</th>
+            <th class="numeric" style="text-align:right">Principal Amount</th>
+            <th>Type</th>
+            <th class="numeric" style="text-align:right">Days in Vault</th>
+          </tr>
+        </thead>
+        <tbody id="activeTbody"></tbody>
+        <tfoot>
+          <tr>
+            <td colspan="3" style="text-align:right">Total Principal</td>
+            <td class="numeric" id="activeTotal">0.00</td>
+            <td colspan="2"></td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+    <div class="hint" style="padding:10px 18px;">
+      <strong>Active Pawn definition:</strong> A PT No. that appears in Entries but has NOT been redeemed (no matching Exit with type <em>Red</em>).
+    </div>
+  </div>
+</section>
+
+<!-- =========== ENTRY TAB =========== -->
+<section id="entryPanel" class="tab-panel">
+  <div class="form-card no-print">
+    <h2 id="entryFormTitle">Add Vault Entry</h2>
+    <form id="entryForm" autocomplete="off">
+      <div class="form-grid entry-grid">
+        <div class="field">
+          <label for="e_date">Date</label>
+          <input type="date" id="e_date" required>
+        </div>
+        <div class="field">
+          <label for="e_ptNo">PT No.</label>
+          <input type="text" id="e_ptNo" required placeholder="e.g. 12345">
+        </div>
+        <div class="field">
+          <label for="e_desc">Item Description</label>
+          <input type="text" id="e_desc" required placeholder="e.g. 18k gold ring, 3.2g">
+        </div>
+        <div class="field numeric">
+          <label for="e_amount">Principal Amount</label>
+          <input type="number" step="0.01" min="0" id="e_amount" required placeholder="0.00">
+        </div>
+        <div class="field">
+          <label for="e_type">Transaction Type</label>
+          <select id="e_type" required>
+            <option value="">— Select —</option>
+            <option value="NP">NP — New Pawn</option>
+            <option value="Ren">Ren — Renewal</option>
+            <option value="Re-app">Re-app — Re-appraisal</option>
+            <option value="OMEE">OMEE</option>
+            <option value="2MEE">2MEE</option>
+            <option value="BD">BD — Backdating</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="e_sig">Signature</label>
+          <input type="text" id="e_sig" placeholder="Initials / name">
+        </div>
+        <div class="form-actions">
+          <button type="submit" class="btn btn-primary" id="entrySubmitBtn">Add Entry</button>
+          <button type="button" class="btn btn-secondary" id="entryResetBtn">Clear</button>
+        </div>
+      </div>
+    </form>
+  </div>
+
+  <div class="table-section">
+    <div class="table-header no-print">
+      <h3 class="table-title">Vault Entry Records</h3>
+      <div class="table-controls">
+        <input type="search" class="search-input" id="entrySearch" placeholder="Search entries…">
+        <button class="btn btn-secondary" id="entryPrintBtn">🖨 Print</button>
+      </div>
+    </div>
+    <div class="ledger-wrap">
+      <table class="ledger" id="entryTable">
+        <thead>
+          <tr>
+            <th data-sort="date" data-type="date">Date <span class="sort-ind">↕</span></th>
+            <th data-sort="ptNo">PT No. <span class="sort-ind">↕</span></th>
+            <th data-sort="itemDescription">Item Description <span class="sort-ind">↕</span></th>
+            <th data-sort="principalAmount" data-type="number" class="numeric" style="text-align:right">Principal Amount <span class="sort-ind">↕</span></th>
+            <th data-sort="transactionType">Type <span class="sort-ind">↕</span></th>
+            <th data-sort="signature">Signature <span class="sort-ind">↕</span></th>
+            <th style="text-align:right">Actions</th>
+          </tr>
+        </thead>
+        <tbody id="entryTbody"></tbody>
+        <tfoot>
+          <tr>
+            <td colspan="3" style="text-align:right">Total</td>
+            <td class="numeric" id="entryTotal">0.00</td>
+            <td colspan="3"></td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- =========== EXIT TAB =========== -->
+<section id="exitPanel" class="tab-panel">
+  <div class="form-card no-print">
+    <h2 id="exitFormTitle">Add Vault Exit</h2>
+    <form id="exitForm" autocomplete="off">
+      <div class="form-grid exit-grid">
+        <div class="field">
+          <label for="x_ptNo">PT No.</label>
+          <input type="text" id="x_ptNo" required placeholder="e.g. 12345">
+        </div>
+        <div class="field">
+          <label for="x_loanDate">Loan Date</label>
+          <input type="date" id="x_loanDate" required>
+        </div>
+        <div class="field">
+          <label for="x_desc">Item Description</label>
+          <input type="text" id="x_desc" required placeholder="e.g. 18k gold ring, 3.2g">
+        </div>
+        <div class="field numeric">
+          <label for="x_amount">Principal Amount</label>
+          <input type="number" step="0.01" min="0" id="x_amount" required placeholder="0.00">
+        </div>
+        <div class="field">
+          <label for="x_type">Transaction Type</label>
+          <select id="x_type" required>
+            <option value="">— Select —</option>
+            <option value="Ren">Ren — Renewal</option>
+            <option value="Red">Red — Redemption</option>
+            <option value="Re-app">Re-app — Re-appraisal</option>
+            <option value="OMEE">OMEE</option>
+            <option value="2MEE">2MEE</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="x_time">Time of Transaction</label>
+          <input type="time" id="x_time" required>
+        </div>
+        <div class="form-actions">
+          <button type="submit" class="btn btn-primary" id="exitSubmitBtn">Add Exit</button>
+          <button type="button" class="btn btn-secondary" id="exitResetBtn">Clear</button>
+        </div>
+      </div>
+    </form>
+  </div>
+
+  <div class="table-section">
+    <div class="table-header no-print">
+      <h3 class="table-title">Vault Exit Records</h3>
+      <div class="table-controls">
+        <input type="search" class="search-input" id="exitSearch" placeholder="Search exits…">
+        <button class="btn btn-secondary" id="exitPrintBtn">🖨 Print</button>
+      </div>
+    </div>
+    <div class="ledger-wrap">
+      <table class="ledger" id="exitTable">
+        <thead>
+          <tr>
+            <th data-sort="ptNo">PT No. <span class="sort-ind">↕</span></th>
+            <th data-sort="loanDate" data-type="date">Loan Date <span class="sort-ind">↕</span></th>
+            <th data-sort="itemDescription">Item Description <span class="sort-ind">↕</span></th>
+            <th data-sort="principalAmount" data-type="number" class="numeric" style="text-align:right">Principal Amount <span class="sort-ind">↕</span></th>
+            <th data-sort="transactionType">Type <span class="sort-ind">↕</span></th>
+            <th data-sort="timeOfTransaction">Time <span class="sort-ind">↕</span></th>
+            <th style="text-align:right">Actions</th>
+          </tr>
+        </thead>
+        <tbody id="exitTbody"></tbody>
+        <tfoot>
+          <tr>
+            <td colspan="3" style="text-align:right">Total</td>
+            <td class="numeric" id="exitTotal">0.00</td>
+            <td colspan="3"></td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<!-- ========= PRINT AREA ========= -->
+<div class="print-area print-only" id="printArea"></div>
+
+<!-- ========= CONFIRM DIALOG ========= -->
+<dialog class="modal" id="confirmDialog">
+  <div class="modal-content">
+    <h3 id="confirmTitle">Are you sure?</h3>
+    <p id="confirmMessage">This action cannot be undone.</p>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" id="confirmCancel">Cancel</button>
+      <button class="btn btn-primary" id="confirmOk">Confirm</button>
+    </div>
+  </div>
+</dialog>
+
+<div class="toast" id="toast"></div>
+
+<script src="js/app.js"></script>
+</body>
+</html>
