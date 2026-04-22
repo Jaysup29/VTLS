@@ -30,15 +30,9 @@ html, body {
 
 body {
   min-height: 100vh;
-  display: flex;
-  flex-direction: column;
   background-image:
     radial-gradient(circle at 20% 10%, rgba(138,90,43,0.04), transparent 40%),
     radial-gradient(circle at 80% 80%, rgba(14,26,43,0.03), transparent 40%);
-}
-
-main {
-  flex: 1 0 auto;
 }
 
 /* ===== HEADER ===== */
@@ -224,10 +218,8 @@ nav.tabs button.active .count {
 
 /* ===== MAIN ===== */
 main {
-  flex: 1 0 auto;
   padding: 24px 28px 60px;
   max-width: 1600px;
-  width: 100%;
   margin: 0 auto;
 }
 
@@ -1041,7 +1033,6 @@ dialog.modal .modal-actions {
    FOOTER
    ===================================================================== */
 .app-footer {
-  flex-shrink: 0;
   text-align: center;
   padding: 18px 28px;
   margin-top: 40px;
@@ -1071,3 +1062,205 @@ dialog.modal .modal-actions {
   vertical-align: middle;
   margin-left: 12px;
 }
+
+/* =====================================================================
+   V2 ADDITIONS — Sticky footer layout
+   ===================================================================== */
+body {
+  display: flex;
+  flex-direction: column;
+}
+#appScreen {
+  flex: 1 0 auto;
+  display: flex;
+  flex-direction: column;
+}
+#appScreen main {
+  flex: 1 0 auto;
+}
+
+/* =====================================================================
+   USER CHIP (top-right of header)
+   ===================================================================== */
+.user-chip {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px 6px 6px;
+  margin-left: 12px;
+  background: rgba(250,247,240,0.08);
+  border: 1px solid rgba(250,247,240,0.2);
+  border-radius: 22px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+.user-chip:hover { background: rgba(250,247,240,0.14); }
+
+.user-chip-avatar {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--paper);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 600;
+  font-size: 13px;
+  font-family: 'Fraunces', serif;
+}
+
+.user-chip-name {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.15;
+  color: var(--paper);
+}
+.user-chip-fullname {
+  font-size: 12px;
+  font-weight: 600;
+}
+.user-chip-role {
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: rgba(250,247,240,0.65);
+}
+
+.user-chip-caret {
+  font-size: 10px;
+  color: rgba(250,247,240,0.6);
+  margin-left: 2px;
+}
+
+.user-menu {
+  display: none;
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 180px;
+  background: white;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(14,26,43,0.2);
+  z-index: 50;
+  overflow: hidden;
+}
+.user-chip.open .user-menu { display: block; }
+
+.user-menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: white;
+  border: none;
+  padding: 10px 14px;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--ink);
+  cursor: pointer;
+  border-bottom: 1px solid var(--rule-soft);
+}
+.user-menu-item:last-child { border-bottom: none; }
+.user-menu-item:hover { background: var(--paper-2); }
+
+/* =====================================================================
+   SCOPE BADGE (e.g. "Your records" for encoders)
+   ===================================================================== */
+.scope-badge {
+  display: inline-block;
+  margin-left: 10px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: var(--paper-2);
+  color: var(--accent-dark);
+  border: 1px solid var(--rule);
+  font-family: 'IBM Plex Sans', sans-serif;
+  vertical-align: middle;
+}
+.scope-badge.empty { display: none; }
+
+.dash-scope {
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-left: 10px;
+  vertical-align: middle;
+}
+.dash-scope:empty { display: none; }
+
+/* =====================================================================
+   ROLE BADGES in users table
+   ===================================================================== */
+.role-badge {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: capitalize;
+  font-family: 'IBM Plex Sans', sans-serif;
+}
+.role-badge.admin      { background: #f7e4e4; color: #822c2c; border: 1px solid #e8b8b8; }
+.role-badge.supervisor { background: #f3e4f7; color: #6b2c82; border: 1px solid #d8b8e8; }
+.role-badge.encoder    { background: #e8f0e4; color: #2f6f4f; border: 1px solid #c4dfb8; }
+.role-badge.viewer     { background: #e4edf7; color: #2c5282; border: 1px solid #b8cde8; }
+
+.status-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: 500;
+}
+.status-badge.active   { background: #e8f0e4; color: #2f6f4f; }
+.status-badge.disabled { background: #f7e4e4; color: #822c2c; }
+
+/* hide tabs based on role (JS manages) */
+nav.tabs button.hidden-tab { display: none; }
+
+/* users grid form */
+.form-grid.users-grid {
+  grid-template-columns: 1.5fr 1.5fr 1fr 1.5fr auto;
+}
+@media (max-width: 900px) {
+  .form-grid.users-grid { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+}
+
+/* footer override: ensure it sits below everything */
+.app-footer { flex-shrink: 0; }
+
+/* Hide "Created By" column when encoder scope is active (own records only) */
+.hide-created-by-col .scope-visible { display: none; }
+
+/* ---- Loading screen ---- */
+.loading-screen {
+  position: fixed; inset: 0;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  gap: 20px;
+  background: var(--paper);
+  z-index: 9999;
+}
+.loader-spinner {
+  width: 44px; height: 44px;
+  border: 3px solid var(--rule);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.9s linear infinite;
+}
+.loader-text {
+  font-size: 12px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+@keyframes spin { to { transform: rotate(360deg); } }

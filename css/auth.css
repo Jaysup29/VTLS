@@ -1,0 +1,200 @@
+/* =====================================================================
+   AUTH SCREENS — login, setup, DB selection
+   ===================================================================== */
+
+.auth-screen {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: var(--paper);
+  background-image:
+    radial-gradient(circle at 15% 15%, rgba(138,90,43,0.06), transparent 45%),
+    radial-gradient(circle at 85% 85%, rgba(14,26,43,0.05), transparent 45%),
+    radial-gradient(circle at 50% 50%, rgba(138,90,43,0.02), transparent 70%);
+  z-index: 100;
+  overflow-y: auto;
+}
+
+.auth-card {
+  width: 100%;
+  max-width: 440px;
+  background: white;
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  padding: 40px 36px;
+  box-shadow:
+    0 1px 3px rgba(14,26,43,0.04),
+    0 20px 60px -10px rgba(14,26,43,0.12);
+  position: relative;
+}
+
+.auth-card::before {
+  content: '';
+  position: absolute;
+  top: -1px; left: -1px; right: -1px;
+  height: 4px;
+  background: linear-gradient(90deg, var(--accent), var(--accent-dark), var(--ink));
+  border-radius: 10px 10px 0 0;
+}
+
+.auth-brand {
+  text-align: center;
+  margin-bottom: 30px;
+  padding-bottom: 24px;
+  border-bottom: 1px solid var(--rule-soft);
+}
+
+.auth-brand h1 {
+  font-family: 'Fraunces', serif;
+  font-weight: 600;
+  font-size: 32px;
+  letter-spacing: -0.02em;
+  margin: 0 0 4px;
+  color: var(--ink);
+}
+
+.auth-brand .auth-sub {
+  display: block;
+  font-size: 10px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.auth-card h2 {
+  font-family: 'Fraunces', serif;
+  font-size: 22px;
+  font-weight: 600;
+  margin: 0 0 8px;
+  color: var(--ink);
+}
+
+.auth-intro {
+  font-size: 13px;
+  color: var(--ink-soft);
+  margin: 0 0 24px;
+  line-height: 1.6;
+}
+
+.auth-field {
+  margin-bottom: 16px;
+}
+
+.auth-field label {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+  margin-bottom: 6px;
+}
+
+.auth-field input {
+  width: 100%;
+  font-family: 'IBM Plex Sans', sans-serif;
+  font-size: 15px;
+  padding: 11px 13px;
+  border: 1px solid var(--rule);
+  border-radius: 5px;
+  background: var(--paper);
+  color: var(--ink);
+  outline: none;
+  transition: all 0.15s ease;
+}
+
+.auth-field input:focus {
+  border-color: var(--accent);
+  background: white;
+  box-shadow: 0 0 0 3px rgba(138,90,43,0.1);
+}
+
+.field-hint {
+  font-size: 11px;
+  color: var(--ink-soft);
+  margin-top: 5px;
+}
+
+.auth-error {
+  min-height: 20px;
+  font-size: 13px;
+  color: var(--danger);
+  margin-bottom: 14px;
+  padding: 0 2px;
+}
+.auth-error:empty { margin-bottom: 0; min-height: 0; }
+
+.btn-lg {
+  font-size: 14px;
+  padding: 12px 20px;
+}
+.btn-full {
+  width: 100%;
+}
+
+.auth-actions-stacked {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 24px;
+}
+
+.auth-hint {
+  font-size: 12px;
+  color: var(--ink-soft);
+  text-align: center;
+  padding-top: 16px;
+  border-top: 1px solid var(--rule-soft);
+  line-height: 1.6;
+}
+.auth-hint code {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  background: var(--paper-2);
+  padding: 1px 6px;
+  border-radius: 3px;
+}
+
+.auth-dbline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--paper-2);
+  border: 1px solid var(--rule);
+  border-radius: 5px;
+  margin-bottom: 20px;
+  font-size: 12px;
+}
+.auth-dbline-label {
+  font-weight: 600;
+  color: var(--ink-soft);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  font-size: 10px;
+}
+.auth-dbline-name {
+  flex: 1;
+  font-family: 'IBM Plex Mono', monospace;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.link-btn {
+  background: none;
+  border: none;
+  color: var(--accent);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 2px 4px;
+  text-decoration: underline;
+}
+.link-btn:hover { color: var(--accent-dark); }

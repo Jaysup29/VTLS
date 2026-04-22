@@ -1,1008 +1,1279 @@
 /* =====================================================================
-   VAULT TRANSACTION LEDGER — Application logic
-   A single-user local tool. No backend. JSON file as database.
+   VAULT LEDGER v2 — Main application module
    ===================================================================== */
 
-// ----- State -----
-let state = {
-  branchName: '',
-  userName: '',
-  entries: [],  // Vault Entry (Prenda)
-  exits: []     // Vault Exit (Ren/Red/Re-app)
-};
-let fileHandle = null;   // File System Access API handle (if supported)
-let currentFileName = null;
-let dirty = false;       // unsaved changes
-let editingId = null;    // row currently being edited
-let editingTab = null;
-let sortState = { entry: { col: null, dir: 1 }, exit: { col: null, dir: 1 } };
-let searchText = { entry: '', exit: '' };
+const App = (() => {
+  // ---- DOM helpers ----
+  const $ = (id) => document.getElementById(id);
+  const fmt = (n) => Number(n || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const fmtDate = (d) => {
+    if (!d) return '';
+    const dt = new Date(d + 'T00:00:00');
+    if (isNaN(dt)) return d;
+    return dt.toLocaleDateString('en-PH', { year: 'numeric', month: '2-digit', day: '2-digit' });
+  };
+  const fmtTime = (t) => {
+    if (!t) return '';
+    const [h, m] = t.split(':');
+    const hh = parseInt(h, 10);
+    const ampm = hh >= 12 ? 'PM' : 'AM';
+    const h12 = ((hh + 11) % 12) + 1;
+    return `${h12}:${m} ${ampm}`;
+  };
+  const fmtDateTime = (iso) => {
+    if (!iso) return '';
+    const d = new Date(iso);
+    if (isNaN(d)) return iso;
+    return d.toLocaleString('en-PH', { year: 'numeric', month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+  };
 
-const LS_KEY = 'vaultLedger.autosave.v1';
-const hasFS = 'showSaveFilePicker' in window && 'showOpenFilePicker' in window;
+  // ---- State ----
+  let editingTab = null;
+  let editingId = null;
+  let sortState = { entry: { col: null, dir: 1 }, exit: { col: null, dir: 1 } };
+  let searchText = { entry: '', exit: '', active: '', audit: '' };
+  let dashRange = 'all';
+  let trendMetric = 'count';
+  let dirty = false;
 
-// ----- Helpers -----
-const $ = (id) => document.getElementById(id);
-const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
-const fmt = (n) => Number(n || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const fmtDate = (d) => {
-  if (!d) return '';
-  const dt = new Date(d + 'T00:00:00');
-  if (isNaN(dt)) return d;
-  return dt.toLocaleDateString('en-PH', { year: 'numeric', month: '2-digit', day: '2-digit' });
-};
-const fmtTime = (t) => {
-  if (!t) return '';
-  const [h, m] = t.split(':');
-  const hh = parseInt(h, 10);
-  const ampm = hh >= 12 ? 'PM' : 'AM';
-  const h12 = ((hh + 11) % 12) + 1;
-  return `${h12}:${m} ${ampm}`;
-};
+  // Cache lists (queried fresh on every render for accuracy)
+  function entries()  { return DB.listEntries({ scopeUserId: Auth.scopeUserId() }); }
+  function exits()    { return DB.listExits({ scopeUserId: Auth.scopeUserId() }); }
+  // For dashboard "Active Pawns" — always scoped to same rule
+  function allEntriesForActive() { return DB.listEntries({ scopeUserId: Auth.scopeUserId() }); }
+  function allExitsForActive() { return DB.listExits({ scopeUserId: Auth.scopeUserId() }); }
 
-function toast(msg, kind = '') {
-  const t = $('toast');
-  t.textContent = msg;
-  t.className = 'toast show ' + kind;
-  clearTimeout(toast._tm);
-  toast._tm = setTimeout(() => t.className = 'toast ' + kind, 2400);
-}
-
-function confirmDialog(title, message) {
-  return new Promise((resolve) => {
-    const dlg = $('confirmDialog');
-    $('confirmTitle').textContent = title;
-    $('confirmMessage').textContent = message;
-    const ok = () => { cleanup(); resolve(true); };
-    const cancel = () => { cleanup(); resolve(false); };
-    const cleanup = () => {
-      $('confirmOk').removeEventListener('click', ok);
-      $('confirmCancel').removeEventListener('click', cancel);
-      dlg.close();
-    };
-    $('confirmOk').addEventListener('click', ok);
-    $('confirmCancel').addEventListener('click', cancel);
-    dlg.showModal();
-  });
-}
-
-function markDirty(flag = true) {
-  dirty = flag;
-  const ind = $('statusIndicator');
-  const txt = $('statusText');
-  ind.className = 'status-indicator ' + (flag ? 'unsaved' : 'saved');
-  if (currentFileName) {
-    txt.textContent = currentFileName + (flag ? ' · unsaved changes' : ' · saved');
-  } else {
-    txt.textContent = flag ? 'Local autosave only · no file selected' : 'Local autosave only';
+  // ---- Toast + confirm ----
+  function toast(msg, kind = '') {
+    const t = $('toast');
+    t.textContent = msg;
+    t.className = 'toast show ' + kind;
+    clearTimeout(toast._tm);
+    toast._tm = setTimeout(() => t.className = 'toast ' + kind, 2400);
   }
-  // Always sync localStorage with the current state so "New" and "Open"
-  // immediately replace any stale autosave from a previous session.
-  autosave();
-}
-
-function autosave() {
-  try {
-    localStorage.setItem(LS_KEY, JSON.stringify(state));
-  } catch (e) { /* quota */ }
-}
-
-function clearAutosave() {
-  try { localStorage.removeItem(LS_KEY); } catch (e) {}
-}
-
-function loadAutosave() {
-  try {
-    const raw = localStorage.getItem(LS_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (parsed && typeof parsed === 'object') {
-        state = Object.assign({ branchName: '', userName: '', entries: [], exits: [] }, parsed);
-        return true;
-      }
-    }
-  } catch (e) {}
-  return false;
-}
-
-// ----- Render -----
-function render() {
-  $('branchName').value = state.branchName || '';
-  $('userName').value = state.userName || '';
-  renderTable('entry');
-  renderTable('exit');
-  renderDashboard();
-}
-
-function renderTable(kind) {
-  const list = kind === 'entry' ? state.entries : state.exits;
-  const tbody = $(kind === 'entry' ? 'entryTbody' : 'exitTbody');
-  const totalCell = $(kind === 'entry' ? 'entryTotal' : 'exitTotal');
-  const countCell = $(kind === 'entry' ? 'entryCount' : 'exitCount');
-
-  const q = searchText[kind].toLowerCase().trim();
-  let rows = list.slice();
-
-  // Filter
-  if (q) {
-    rows = rows.filter(r => Object.values(r).some(v => String(v).toLowerCase().includes(q)));
-  }
-
-  // Sort
-  const ss = sortState[kind];
-  if (ss.col) {
-    const col = ss.col, dir = ss.dir;
-    rows.sort((a, b) => {
-      let av = a[col], bv = b[col];
-      if (col === 'principalAmount') { av = Number(av || 0); bv = Number(bv || 0); }
-      else { av = String(av || '').toLowerCase(); bv = String(bv || '').toLowerCase(); }
-      return av < bv ? -dir : av > bv ? dir : 0;
+  function confirmDialog(title, message) {
+    return new Promise((resolve) => {
+      const dlg = $('confirmDialog');
+      $('confirmTitle').textContent = title;
+      $('confirmMessage').textContent = message;
+      const ok = () => { cleanup(); resolve(true); };
+      const cancel = () => { cleanup(); resolve(false); };
+      const cleanup = () => {
+        $('confirmOk').removeEventListener('click', ok);
+        $('confirmCancel').removeEventListener('click', cancel);
+        dlg.close();
+      };
+      $('confirmOk').addEventListener('click', ok);
+      $('confirmCancel').addEventListener('click', cancel);
+      dlg.showModal();
     });
   }
 
-  // Total
-  const total = list.reduce((s, r) => s + Number(r.principalAmount || 0), 0);
-  totalCell.textContent = fmt(total);
-  countCell.textContent = list.length;
-
-  // Update sort indicators
-  document.querySelectorAll(`#${kind}Table th[data-sort]`).forEach(th => {
-    th.classList.remove('sorted-asc', 'sorted-desc');
-    const ind = th.querySelector('.sort-ind');
-    if (th.dataset.sort === ss.col) {
-      th.classList.add(ss.dir === 1 ? 'sorted-asc' : 'sorted-desc');
-      ind.textContent = ss.dir === 1 ? '↑' : '↓';
-    } else {
-      ind.textContent = '↕';
-    }
-  });
-
-  if (!rows.length) {
-    tbody.innerHTML = `<tr class="empty-row"><td colspan="7">${q ? 'No matches for your search.' : 'No records yet. Add one using the form above.'}</td></tr>`;
-    return;
+  // ---- Screen management ----
+  function showScreen(name) {
+    ['loadingScreen', 'dbScreen', 'setupScreen', 'loginScreen', 'appScreen'].forEach(id => {
+      const el = $(id);
+      if (el) el.style.display = id === name ? '' : 'none';
+    });
   }
 
-  tbody.innerHTML = rows.map(r => rowHtml(kind, r)).join('');
-}
+  // ---- Dirty flag / status ----
+  function markDirty(flag = true) {
+    dirty = flag;
+    const ind = $('statusIndicator');
+    const txt = $('statusText');
+    if (!ind) return;
+    ind.className = 'status-indicator ' + (flag ? 'unsaved' : 'saved');
+    const name = DB.getFileName();
+    if (name) txt.textContent = name + (flag ? ' · unsaved changes' : ' · saved');
+    else txt.textContent = flag ? 'In-memory DB · unsaved' : 'Database loaded';
+  }
 
-function rowHtml(kind, r) {
-  const isEditing = editingId === r.id && editingTab === kind;
-  const typeBadge = (t) => `<span class="badge ${esc(t || '').replace(/[^A-Za-z0-9-]/g, '-')}">${esc(t || '')}</span>`;
+  // ---- DB screen handlers ----
+  function setupDbScreen() {
+    $('btnCreateDb').addEventListener('click', async () => {
+      DB.createEmpty();
+      DB.setFileName(null);
+      DB.setFileHandle(null);
+      afterDbLoaded();
+      toast('Empty database created. Please save it to a file soon.', 'success');
+    });
+    $('btnOpenDb').addEventListener('click', async () => {
+      await openDb();
+    });
+  }
 
-  if (isEditing) {
+  async function openDb() {
+    try {
+      if (DB.hasFileAPI()) {
+        const [handle] = await window.showOpenFilePicker({
+          types: [{ description: 'SQLite database', accept: { 'application/x-sqlite3': ['.db', '.sqlite', '.sqlite3'] } }],
+          multiple: false
+        });
+        const file = await handle.getFile();
+        const buf = await file.arrayBuffer();
+        await DB.loadFromArrayBuffer(buf);
+        DB.setFileHandle(handle);
+        DB.setFileName(file.name);
+        afterDbLoaded();
+      } else {
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.accept = '.db,.sqlite,.sqlite3';
+        input.onchange = async () => {
+          const file = input.files[0];
+          if (!file) return;
+          const buf = await file.arrayBuffer();
+          await DB.loadFromArrayBuffer(buf);
+          DB.setFileName(file.name);
+          afterDbLoaded();
+        };
+        input.click();
+      }
+    } catch (err) {
+      if (err.name !== 'AbortError') toast('Failed to open: ' + err.message, 'error');
+    }
+  }
+
+  function afterDbLoaded() {
+    // Route based on whether users exist
+    if (DB.userCount() === 0) {
+      showScreen('setupScreen');
+      $('setupFullName').focus();
+    } else {
+      const name = DB.getFileName() || '(in-memory)';
+      $('loginDbName').textContent = name;
+      // Try to restore session
+      const restored = Auth.restoreSession();
+      if (restored) enterApp();
+      else {
+        showScreen('loginScreen');
+        $('loginUsername').focus();
+      }
+    }
+  }
+
+  // ---- Setup (first admin) ----
+  function setupSetupScreen() {
+    $('setupForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const err = $('setupError');
+      err.textContent = '';
+      const pw = $('setupPassword').value;
+      const pw2 = $('setupPasswordConfirm').value;
+      if (pw !== pw2) { err.textContent = 'Passwords do not match.'; return; }
+      if (pw.length < 8) { err.textContent = 'Password must be at least 8 characters.'; return; }
+      const username = $('setupUsername').value.trim();
+      const fullName = $('setupFullName').value.trim();
+      if (!/^[a-zA-Z0-9_.-]{3,32}$/.test(username)) {
+        err.textContent = 'Username must be 3-32 chars (letters, digits, _ . - only).';
+        return;
+      }
+      const result = await Auth.createUserAccount({ username, fullName, role: 'admin', password: pw });
+      if (!result.ok) { err.textContent = result.error; return; }
+      // Now log in automatically
+      const loginResult = await Auth.login(username, pw);
+      if (!loginResult.ok) { err.textContent = loginResult.error; return; }
+      markDirty(true);
+      enterApp();
+      toast('Welcome, ' + fullName + '! Save the database to persist your admin account.', 'success');
+    });
+  }
+
+  // ---- Login ----
+  function setupLoginScreen() {
+    $('loginForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const err = $('loginError');
+      err.textContent = '';
+      const username = $('loginUsername').value.trim();
+      const password = $('loginPassword').value;
+      const result = await Auth.login(username, password);
+      if (!result.ok) {
+        err.textContent = result.error;
+        $('loginPassword').value = '';
+        $('loginPassword').focus();
+        return;
+      }
+      $('loginPassword').value = '';
+      markDirty(true);  // last_login_at was updated
+      enterApp();
+      toast('Welcome back, ' + result.user.full_name, 'success');
+    });
+    $('loginSwitchDb').addEventListener('click', () => {
+      DB.close();
+      Auth.logout();
+      showScreen('dbScreen');
+    });
+  }
+
+  // ---- Enter app ----
+  function enterApp() {
+    showScreen('appScreen');
+    applyRoleUI();
+    const user = Auth.currentUserRecord();
+    $('userChipAvatar').textContent = (user.full_name || user.username || '?').charAt(0).toUpperCase();
+    $('userChipName').textContent = user.full_name;
+    $('userChipRole').textContent = user.role;
+    // Branch name
+    $('branchName').value = DB.getMeta('branch_name') || '';
+    // Default form dates
+    const today = new Date().toISOString().slice(0, 10);
+    $('e_date').value = today;
+    $('x_loanDate').value = today;
+    const now = new Date();
+    $('x_time').value = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
+
+    refreshAll();
+    markDirty(dirty);
+
+    // Activate default tab (dashboard)
+    switchTab('dashboard');
+  }
+
+  // ---- Role-based UI ----
+  function applyRoleUI() {
+    // Hide tabs not allowed for this role
+    document.querySelectorAll('nav.tabs button[data-requires-role]').forEach(btn => {
+      const required = btn.dataset.requiresRole.split(',').map(s => s.trim());
+      const user = Auth.currentUserRecord();
+      if (!user || !required.includes(user.role)) btn.classList.add('hidden-tab');
+      else btn.classList.remove('hidden-tab');
+    });
+
+    // Hide forms for write-restricted roles
+    document.querySelectorAll('[data-requires-write]').forEach(el => {
+      const what = el.dataset.requiresWrite;
+      const ability = what === 'entry' ? 'write_entries' : 'write_exits';
+      el.style.display = Auth.can(ability) ? '' : 'none';
+    });
+
+    // Scope badge text
+    const label = Auth.scopeLabel();
+    ['entryScopeBadge', 'exitScopeBadge'].forEach(id => {
+      const el = $(id);
+      if (el) {
+        el.textContent = label;
+        if (label) el.classList.remove('empty'); else el.classList.add('empty');
+      }
+    });
+    $('dashScope').textContent = label ? '· ' + label : '';
+
+    // Hide "Created By" column when scope is own-only (redundant info)
+    const bodyScope = Auth.scopeUserId() ? 'hide-created-by-col' : '';
+    document.body.classList.remove('hide-created-by-col');
+    if (bodyScope) document.body.classList.add(bodyScope);
+  }
+
+  // ---- Refresh everything ----
+  function refreshAll() {
+    renderTable('entry');
+    renderTable('exit');
+    renderDashboard();
+    renderUsersTable();
+    renderAuditTable();
+    updateTabCounts();
+  }
+
+  function updateTabCounts() {
+    $('entryCount').textContent = entries().length;
+    $('exitCount').textContent = exits().length;
+  }
+
+  // ---- Table rendering ----
+  function renderTable(kind) {
+    const list = kind === 'entry' ? entries() : exits();
+    const tbody = $(kind === 'entry' ? 'entryTbody' : 'exitTbody');
+    const totalCell = $(kind === 'entry' ? 'entryTotal' : 'exitTotal');
+
+    const q = searchText[kind].toLowerCase().trim();
+    let rows = list.slice();
+
+    if (q) {
+      rows = rows.filter(r => Object.values(r).some(v => String(v ?? '').toLowerCase().includes(q)));
+    }
+
+    const ss = sortState[kind];
+    if (ss.col) {
+      rows.sort((a, b) => {
+        let av = a[ss.col], bv = b[ss.col];
+        if (ss.col === 'principal_amount') { av = Number(av || 0); bv = Number(bv || 0); }
+        else { av = String(av ?? '').toLowerCase(); bv = String(bv ?? '').toLowerCase(); }
+        return av < bv ? -ss.dir : av > bv ? ss.dir : 0;
+      });
+    }
+
+    const total = list.reduce((s, r) => s + Number(r.principal_amount || 0), 0);
+    totalCell.textContent = fmt(total);
+
+    document.querySelectorAll(`#${kind}Table th[data-sort]`).forEach(th => {
+      th.classList.remove('sorted-asc', 'sorted-desc');
+      const ind = th.querySelector('.sort-ind');
+      if (th.dataset.sort === ss.col) {
+        th.classList.add(ss.dir === 1 ? 'sorted-asc' : 'sorted-desc');
+        if (ind) ind.textContent = ss.dir === 1 ? '↑' : '↓';
+      } else if (ind) ind.textContent = '↕';
+    });
+
+    if (!rows.length) {
+      tbody.innerHTML = `<tr class="empty-row"><td colspan="8">${q ? 'No matches for your search.' : 'No records yet.'}</td></tr>`;
+      return;
+    }
+
+    tbody.innerHTML = rows.map(r => rowHtml(kind, r)).join('');
+  }
+
+  function rowHtml(kind, r) {
+    const isEditing = editingId === r.id && editingTab === kind;
+    const canModify = Auth.canModifyRecord(r);
+    const canWrite = Auth.can(kind === 'entry' ? 'write_entries' : 'write_exits');
+    const scopeVisible = !Auth.scopeUserId();  // only show Created By when user sees all
+
+    if (isEditing) {
+      return editingRowHtml(kind, r);
+    }
+
+    const createdByCell = scopeVisible
+      ? `<td class="scope-visible">${esc(r.created_by_name || r.created_by_username || '—')}</td>`
+      : '';
+
+    const typeBadge = `<span class="badge ${esc((r.transaction_type || '').replace(/[^A-Za-z0-9-]/g, '-'))}">${esc(r.transaction_type || '')}</span>`;
+
+    let actionsHtml = '';
+    if (canWrite && canModify) {
+      actionsHtml = `
+        <button class="btn-icon" data-act="edit" data-kind="${kind}" data-id="${r.id}">Edit</button>
+        <button class="btn-danger" data-act="delete" data-kind="${kind}" data-id="${r.id}">Delete</button>`;
+    } else {
+      actionsHtml = '<span class="hint">—</span>';
+    }
+
+    if (kind === 'entry') {
+      return `<tr data-id="${r.id}">
+        <td>${esc(fmtDate(r.date))}</td>
+        <td>${esc(r.pt_no)}</td>
+        <td>${esc(r.item_description)}</td>
+        <td class="numeric">${fmt(r.principal_amount)}</td>
+        <td>${typeBadge}</td>
+        <td>${esc(r.signature || '')}</td>
+        ${createdByCell}
+        <td class="row-actions">${actionsHtml}</td>
+      </tr>`;
+    } else {
+      return `<tr data-id="${r.id}">
+        <td>${esc(r.pt_no)}</td>
+        <td>${esc(fmtDate(r.loan_date))}</td>
+        <td>${esc(r.item_description)}</td>
+        <td class="numeric">${fmt(r.principal_amount)}</td>
+        <td>${typeBadge}</td>
+        <td>${esc(fmtTime(r.time_of_transaction))}</td>
+        ${createdByCell}
+        <td class="row-actions">${actionsHtml}</td>
+      </tr>`;
+    }
+  }
+
+  function editingRowHtml(kind, r) {
+    const scopeVisible = !Auth.scopeUserId();
+    const createdByCell = scopeVisible ? `<td class="scope-visible">${esc(r.created_by_name || '')}</td>` : '';
     if (kind === 'entry') {
       return `<tr class="editing" data-id="${r.id}">
         <td><input type="date" data-f="date" value="${esc(r.date)}"></td>
-        <td><input type="text" data-f="ptNo" value="${esc(r.ptNo)}"></td>
-        <td><input type="text" data-f="itemDescription" value="${esc(r.itemDescription)}"></td>
-        <td><input type="number" step="0.01" min="0" data-f="principalAmount" value="${esc(r.principalAmount)}"></td>
-        <td>${typeSelect('entry', r.transactionType)}</td>
+        <td><input type="text" data-f="pt_no" value="${esc(r.pt_no)}"></td>
+        <td><input type="text" data-f="item_description" value="${esc(r.item_description)}"></td>
+        <td><input type="number" step="0.01" min="0" data-f="principal_amount" value="${esc(r.principal_amount)}"></td>
+        <td>${typeSelect('entry', r.transaction_type)}</td>
         <td><input type="text" data-f="signature" value="${esc(r.signature || '')}"></td>
+        ${createdByCell}
         <td class="row-actions">
-          <button class="btn-icon" onclick="saveEdit('entry','${r.id}')">Save</button>
-          <button class="btn-icon" onclick="cancelEdit()">Cancel</button>
+          <button class="btn-icon" data-act="save" data-kind="entry" data-id="${r.id}">Save</button>
+          <button class="btn-icon" data-act="cancel">Cancel</button>
         </td>
       </tr>`;
     } else {
       return `<tr class="editing" data-id="${r.id}">
-        <td><input type="text" data-f="ptNo" value="${esc(r.ptNo)}"></td>
-        <td><input type="date" data-f="loanDate" value="${esc(r.loanDate)}"></td>
-        <td><input type="text" data-f="itemDescription" value="${esc(r.itemDescription)}"></td>
-        <td><input type="number" step="0.01" min="0" data-f="principalAmount" value="${esc(r.principalAmount)}"></td>
-        <td>${typeSelect('exit', r.transactionType)}</td>
-        <td><input type="time" data-f="timeOfTransaction" value="${esc(r.timeOfTransaction)}"></td>
+        <td><input type="text" data-f="pt_no" value="${esc(r.pt_no)}"></td>
+        <td><input type="date" data-f="loan_date" value="${esc(r.loan_date)}"></td>
+        <td><input type="text" data-f="item_description" value="${esc(r.item_description)}"></td>
+        <td><input type="number" step="0.01" min="0" data-f="principal_amount" value="${esc(r.principal_amount)}"></td>
+        <td>${typeSelect('exit', r.transaction_type)}</td>
+        <td><input type="time" data-f="time_of_transaction" value="${esc(r.time_of_transaction)}"></td>
+        ${createdByCell}
         <td class="row-actions">
-          <button class="btn-icon" onclick="saveEdit('exit','${r.id}')">Save</button>
-          <button class="btn-icon" onclick="cancelEdit()">Cancel</button>
+          <button class="btn-icon" data-act="save" data-kind="exit" data-id="${r.id}">Save</button>
+          <button class="btn-icon" data-act="cancel">Cancel</button>
         </td>
       </tr>`;
     }
   }
 
-  if (kind === 'entry') {
-    return `<tr data-id="${r.id}">
-      <td>${esc(fmtDate(r.date))}</td>
-      <td>${esc(r.ptNo)}</td>
-      <td>${esc(r.itemDescription)}</td>
-      <td class="numeric">${fmt(r.principalAmount)}</td>
-      <td>${typeBadge(r.transactionType)}</td>
-      <td>${esc(r.signature || '')}</td>
-      <td class="row-actions">
-        <button class="btn-icon" onclick="beginEdit('entry','${r.id}')">Edit</button>
-        <button class="btn-danger" onclick="deleteRow('entry','${r.id}')">Delete</button>
-      </td>
-    </tr>`;
-  } else {
-    return `<tr data-id="${r.id}">
-      <td>${esc(r.ptNo)}</td>
-      <td>${esc(fmtDate(r.loanDate))}</td>
-      <td>${esc(r.itemDescription)}</td>
-      <td class="numeric">${fmt(r.principalAmount)}</td>
-      <td>${typeBadge(r.transactionType)}</td>
-      <td>${esc(fmtTime(r.timeOfTransaction))}</td>
-      <td class="row-actions">
-        <button class="btn-icon" onclick="beginEdit('exit','${r.id}')">Edit</button>
-        <button class="btn-danger" onclick="deleteRow('exit','${r.id}')">Delete</button>
-      </td>
-    </tr>`;
+  function typeSelect(kind, current) {
+    const opts = kind === 'entry'
+      ? ['NP', 'Ren', 'Re-app', 'OMEE', '2MEE', 'BD']
+      : ['Ren', 'Red', 'Re-app', 'OMEE', '2MEE'];
+    return `<select data-f="transaction_type">${opts.map(o => `<option value="${o}"${o === current ? ' selected' : ''}>${o}</option>`).join('')}</select>`;
   }
-}
 
-function typeSelect(kind, current) {
-  const opts = kind === 'entry'
-    ? ['NP','Ren','Re-app','OMEE','2MEE','BD']
-    : ['Ren','Red','Re-app','OMEE','2MEE'];
-  return `<select data-f="transactionType">${opts.map(o => `<option value="${o}"${o===current?' selected':''}>${o}</option>`).join('')}</select>`;
-}
-
-// ----- CRUD -----
-$('entryForm').addEventListener('submit', (e) => {
-  e.preventDefault();
-  const rec = {
-    id: uid(),
-    createdAt: new Date().toISOString(),
-    date: $('e_date').value,
-    ptNo: $('e_ptNo').value.trim(),
-    itemDescription: $('e_desc').value.trim(),
-    principalAmount: Number($('e_amount').value || 0),
-    transactionType: $('e_type').value,
-    signature: $('e_sig').value.trim()
-  };
-  if (!rec.date || !rec.ptNo || !rec.itemDescription || !rec.transactionType) {
-    toast('Please fill in all required fields.', 'error'); return;
-  }
-  state.entries.push(rec);
-  markDirty();
-  renderTable('entry');
-  renderDashboard();
-  $('entryForm').reset();
-  $('e_ptNo').focus();
-  toast('Entry added ✓', 'success');
-});
-
-$('exitForm').addEventListener('submit', (e) => {
-  e.preventDefault();
-  const rec = {
-    id: uid(),
-    createdAt: new Date().toISOString(),
-    ptNo: $('x_ptNo').value.trim(),
-    loanDate: $('x_loanDate').value,
-    itemDescription: $('x_desc').value.trim(),
-    principalAmount: Number($('x_amount').value || 0),
-    transactionType: $('x_type').value,
-    timeOfTransaction: $('x_time').value
-  };
-  if (!rec.ptNo || !rec.loanDate || !rec.itemDescription || !rec.transactionType || !rec.timeOfTransaction) {
-    toast('Please fill in all required fields.', 'error'); return;
-  }
-  state.exits.push(rec);
-  markDirty();
-  renderTable('exit');
-  renderDashboard();
-  $('exitForm').reset();
-  $('x_ptNo').focus();
-  toast('Exit added ✓', 'success');
-});
-
-$('entryResetBtn').addEventListener('click', () => $('entryForm').reset());
-$('exitResetBtn').addEventListener('click', () => $('exitForm').reset());
-
-window.beginEdit = (kind, id) => { editingId = id; editingTab = kind; renderTable(kind); };
-window.cancelEdit = () => { const k = editingTab; editingId = null; editingTab = null; if (k) renderTable(k); };
-
-window.saveEdit = (kind, id) => {
-  const row = document.querySelector(`#${kind}Tbody tr[data-id="${id}"]`);
-  if (!row) return;
-  const list = kind === 'entry' ? state.entries : state.exits;
-  const rec = list.find(r => r.id === id);
-  if (!rec) return;
-  row.querySelectorAll('[data-f]').forEach(el => {
-    const f = el.dataset.f;
-    rec[f] = el.type === 'number' ? Number(el.value || 0) : el.value.trim ? el.value.trim() : el.value;
-  });
-  editingId = null; editingTab = null;
-  markDirty();
-  renderTable(kind);
-  renderDashboard();
-  toast('Changes saved ✓', 'success');
-};
-
-window.deleteRow = async (kind, id) => {
-  const ok = await confirmDialog('Delete this row?', 'This will remove the record from the ledger. This cannot be undone.');
-  if (!ok) return;
-  if (kind === 'entry') state.entries = state.entries.filter(r => r.id !== id);
-  else state.exits = state.exits.filter(r => r.id !== id);
-  markDirty();
-  renderTable(kind);
-  renderDashboard();
-  toast('Row deleted', 'error');
-};
-
-// ----- Branch / Tabs / Search / Sort -----
-$('branchName').addEventListener('input', (e) => {
-  state.branchName = e.target.value;
-  markDirty();
-});
-
-$('userName').addEventListener('input', (e) => {
-  state.userName = e.target.value;
-  markDirty();
-});
-
-document.querySelectorAll('nav.tabs button').forEach(btn => {
-  btn.addEventListener('click', () => {
-    document.querySelectorAll('nav.tabs button').forEach(b => b.classList.remove('active'));
-    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
-    btn.classList.add('active');
-    $(btn.dataset.tab + 'Panel').classList.add('active');
-  });
-});
-
-$('entrySearch').addEventListener('input', e => { searchText.entry = e.target.value; renderTable('entry'); });
-$('exitSearch').addEventListener('input', e => { searchText.exit = e.target.value; renderTable('exit'); });
-
-['entry', 'exit'].forEach(kind => {
-  document.querySelectorAll(`#${kind}Table th[data-sort]`).forEach(th => {
-    th.addEventListener('click', () => {
-      const col = th.dataset.sort;
-      const s = sortState[kind];
-      if (s.col === col) s.dir = -s.dir;
-      else { s.col = col; s.dir = 1; }
-      renderTable(kind);
-    });
-  });
-});
-
-// ----- File System Access (Open / Save / Save As / New / Export) -----
-$('btnNew').addEventListener('click', async () => {
-  const ok = await confirmDialog('Start a new database?', 'Unsaved changes in the current database will be lost unless you save first.');
-  if (!ok) return;
-  state = { branchName: '', userName: '', entries: [], exits: [] };
-  fileHandle = null;
-  currentFileName = null;
-  clearAutosave();           // wipe any stale autosave from previous session
-  render();
-  markDirty(false);          // this will also write the fresh empty state back
-  toast('New database started', 'success');
-});
-
-$('btnOpen').addEventListener('click', async () => {
-  if (hasFS) {
-    try {
-      const [handle] = await window.showOpenFilePicker({
-        types: [{ description: 'JSON database', accept: { 'application/json': ['.json'] } }],
-        multiple: false
-      });
-      const file = await handle.getFile();
-      const text = await file.text();
-      loadData(JSON.parse(text));
-      fileHandle = handle;
-      currentFileName = file.name;
-      markDirty(false);
-      toast('Opened ' + file.name, 'success');
-    } catch (err) {
-      if (err.name !== 'AbortError') toast('Failed to open file: ' + err.message, 'error');
-    }
-  } else {
-    // Fallback: use hidden file input
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = '.json,application/json';
-    input.onchange = async () => {
-      const file = input.files[0];
-      if (!file) return;
-      try {
-        const text = await file.text();
-        loadData(JSON.parse(text));
-        currentFileName = file.name;
-        markDirty(false);
-        toast('Loaded ' + file.name + ' (use Export to download updates)', 'success');
-      } catch (err) { toast('Invalid JSON file', 'error'); }
-    };
-    input.click();
-  }
-});
-
-$('btnSave').addEventListener('click', async () => { await saveToFile(false); });
-$('btnSaveAs').addEventListener('click', async () => { await saveToFile(true); });
-$('btnExport').addEventListener('click', () => exportDownload());
-
-async function saveToFile(saveAs) {
-  const data = JSON.stringify(state, null, 2);
-  if (hasFS) {
-    try {
-      if (!fileHandle || saveAs) {
-        fileHandle = await window.showSaveFilePicker({
-          suggestedName: currentFileName || defaultFileName(),
-          types: [{ description: 'JSON database', accept: { 'application/json': ['.json'] } }]
-        });
-        currentFileName = fileHandle.name;
+  // ---- CRUD handlers ----
+  function setupEntryForm() {
+    $('entryForm').addEventListener('submit', (e) => {
+      e.preventDefault();
+      if (!Auth.can('write_entries')) return;
+      const rec = {
+        date: $('e_date').value,
+        pt_no: $('e_ptNo').value.trim(),
+        item_description: $('e_desc').value.trim(),
+        principal_amount: Number($('e_amount').value || 0),
+        transaction_type: $('e_type').value,
+        signature: $('e_sig').value.trim()
+      };
+      if (!rec.date || !rec.pt_no || !rec.item_description || !rec.transaction_type) {
+        toast('Please fill in all required fields.', 'error');
+        return;
       }
-      const writable = await fileHandle.createWritable();
-      await writable.write(data);
-      await writable.close();
-      markDirty(false);
-      toast('Saved to ' + currentFileName, 'success');
-    } catch (err) {
-      if (err.name !== 'AbortError') toast('Save failed: ' + err.message, 'error');
+      const id = DB.insertEntry(rec, Auth.currentUserRecord().id);
+      DB.audit(Auth.currentUserRecord(), 'create_entry', 'entry', id, `PT ${rec.pt_no}, ₱${fmt(rec.principal_amount)}`);
+      markDirty();
+      renderTable('entry');
+      renderDashboard();
+      updateTabCounts();
+      $('entryForm').reset();
+      $('e_date').value = new Date().toISOString().slice(0, 10);
+      $('e_ptNo').focus();
+      toast('Entry added ✓', 'success');
+    });
+    $('entryResetBtn').addEventListener('click', () => $('entryForm').reset());
+  }
+
+  function setupExitForm() {
+    $('exitForm').addEventListener('submit', (e) => {
+      e.preventDefault();
+      if (!Auth.can('write_exits')) return;
+      const rec = {
+        pt_no: $('x_ptNo').value.trim(),
+        loan_date: $('x_loanDate').value,
+        item_description: $('x_desc').value.trim(),
+        principal_amount: Number($('x_amount').value || 0),
+        transaction_type: $('x_type').value,
+        time_of_transaction: $('x_time').value
+      };
+      if (!rec.pt_no || !rec.loan_date || !rec.item_description || !rec.transaction_type || !rec.time_of_transaction) {
+        toast('Please fill in all required fields.', 'error');
+        return;
+      }
+      const id = DB.insertExit(rec, Auth.currentUserRecord().id);
+      DB.audit(Auth.currentUserRecord(), 'create_exit', 'exit', id, `PT ${rec.pt_no}, type ${rec.transaction_type}`);
+      markDirty();
+      renderTable('exit');
+      renderDashboard();
+      updateTabCounts();
+      $('exitForm').reset();
+      $('x_loanDate').value = new Date().toISOString().slice(0, 10);
+      const now = new Date();
+      $('x_time').value = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
+      $('x_ptNo').focus();
+      toast('Exit added ✓', 'success');
+    });
+    $('exitResetBtn').addEventListener('click', () => $('exitForm').reset());
+  }
+
+  // Delegated row action handler (edit / delete / save / cancel)
+  function setupRowActions() {
+    document.addEventListener('click', async (e) => {
+      const btn = e.target.closest('[data-act]');
+      if (!btn) return;
+      const act = btn.dataset.act;
+      const kind = btn.dataset.kind;
+      const id = Number(btn.dataset.id);
+
+      if (act === 'edit') {
+        editingId = id;
+        editingTab = kind;
+        renderTable(kind);
+      } else if (act === 'cancel') {
+        editingId = null;
+        editingTab = null;
+        if (kind) renderTable(kind); else { renderTable('entry'); renderTable('exit'); }
+      } else if (act === 'save') {
+        const row = document.querySelector(`#${kind}Tbody tr[data-id="${id}"]`);
+        if (!row) return;
+        const rec = {};
+        row.querySelectorAll('[data-f]').forEach(el => {
+          rec[el.dataset.f] = el.type === 'number' ? Number(el.value || 0) : (el.value.trim ? el.value.trim() : el.value);
+        });
+        const before = kind === 'entry' ? DB.getEntry(id) : DB.getExit(id);
+        if (!Auth.canModifyRecord(before)) { toast('Not authorized', 'error'); return; }
+        if (kind === 'entry') DB.updateEntry(id, rec, Auth.currentUserRecord().id);
+        else DB.updateExit(id, rec, Auth.currentUserRecord().id);
+        DB.audit(Auth.currentUserRecord(), 'update_' + kind, kind, id, `PT ${rec.pt_no}`);
+        editingId = null; editingTab = null;
+        markDirty();
+        renderTable(kind);
+        renderDashboard();
+        toast('Changes saved ✓', 'success');
+      } else if (act === 'delete') {
+        const rec = kind === 'entry' ? DB.getEntry(id) : DB.getExit(id);
+        if (!Auth.canModifyRecord(rec)) { toast('Not authorized', 'error'); return; }
+        const ok = await confirmDialog('Delete this row?', 'This cannot be undone.');
+        if (!ok) return;
+        if (kind === 'entry') DB.deleteEntry(id); else DB.deleteExit(id);
+        DB.audit(Auth.currentUserRecord(), 'delete_' + kind, kind, id, `PT ${rec?.pt_no || ''}`);
+        markDirty();
+        renderTable(kind);
+        renderDashboard();
+        updateTabCounts();
+        toast('Row deleted', 'error');
+      } else if (act === 'reset-pw') {
+        openResetPasswordDialog(id);
+      } else if (act === 'toggle-active') {
+        await toggleUserActive(id);
+      } else if (act === 'change-role') {
+        const newRole = btn.dataset.role;
+        await changeUserRole(id, newRole);
+      } else if (act === 'delete-user') {
+        await deleteUserConfirm(id);
+      }
+    });
+  }
+
+  // ---- Branch / Tabs / Search / Sort ----
+  function setupBranchInput() {
+    $('branchName').addEventListener('input', (e) => {
+      DB.setMeta('branch_name', e.target.value);
+      markDirty();
+    });
+  }
+
+  function switchTab(tabName) {
+    document.querySelectorAll('nav.tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === tabName));
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === tabName + 'Panel'));
+  }
+
+  function setupTabs() {
+    document.querySelectorAll('nav.tabs button').forEach(btn => {
+      btn.addEventListener('click', () => switchTab(btn.dataset.tab));
+    });
+  }
+
+  function setupSearchAndSort() {
+    $('entrySearch').addEventListener('input', (e) => { searchText.entry = e.target.value; renderTable('entry'); });
+    $('exitSearch').addEventListener('input', (e) => { searchText.exit = e.target.value; renderTable('exit'); });
+    $('activeSearch').addEventListener('input', (e) => { searchText.active = e.target.value; renderActivePawns(); });
+    $('auditSearch').addEventListener('input', (e) => { searchText.audit = e.target.value; renderAuditTable(); });
+
+    ['entry', 'exit'].forEach(kind => {
+      document.querySelectorAll(`#${kind}Table th[data-sort]`).forEach(th => {
+        th.addEventListener('click', () => {
+          const col = th.dataset.sort;
+          const s = sortState[kind];
+          if (s.col === col) s.dir = -s.dir; else { s.col = col; s.dir = 1; }
+          renderTable(kind);
+        });
+      });
+    });
+  }
+
+  // ---- DB save/export ----
+  function setupDbToolbar() {
+    $('btnSaveDb').addEventListener('click', () => saveDb(false));
+    $('btnSaveDbAs').addEventListener('click', () => saveDb(true));
+    $('btnExportDb').addEventListener('click', () => exportDb());
+
+    window.addEventListener('keydown', (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+        e.preventDefault();
+        saveDb(false);
+      }
+    });
+
+    window.addEventListener('beforeunload', (e) => {
+      if (dirty) { e.preventDefault(); e.returnValue = ''; }
+    });
+  }
+
+  async function saveDb(saveAs) {
+    const bytes = DB.exportBytes();
+    if (DB.hasFileAPI()) {
+      try {
+        let handle = DB.getFileHandle();
+        if (!handle || saveAs) {
+          handle = await window.showSaveFilePicker({
+            suggestedName: DB.getFileName() || defaultDbName(),
+            types: [{ description: 'SQLite database', accept: { 'application/x-sqlite3': ['.db'] } }]
+          });
+          DB.setFileHandle(handle);
+          DB.setFileName(handle.name);
+        }
+        const writable = await handle.createWritable();
+        await writable.write(bytes);
+        await writable.close();
+        markDirty(false);
+        toast('Saved to ' + DB.getFileName(), 'success');
+      } catch (err) {
+        if (err.name !== 'AbortError') toast('Save failed: ' + err.message, 'error');
+      }
+    } else {
+      exportDb();
     }
-  } else {
-    exportDownload();
-  }
-}
-
-function exportDownload() {
-  const data = JSON.stringify(state, null, 2);
-  const blob = new Blob([data], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = currentFileName || defaultFileName();
-  a.click();
-  URL.revokeObjectURL(url);
-  if (!hasFS) markDirty(false);
-  toast('Downloaded ' + a.download, 'success');
-}
-
-function defaultFileName() {
-  const b = (state.branchName || 'branch').replace(/[^A-Za-z0-9]/g, '_');
-  const d = new Date().toISOString().slice(0, 10);
-  return `vault_ledger_${b}_${d}.json`;
-}
-
-function loadData(data) {
-  state = {
-    branchName: data.branchName || '',
-    userName: data.userName || '',
-    entries: Array.isArray(data.entries) ? data.entries : [],
-    exits: Array.isArray(data.exits) ? data.exits : []
-  };
-  // Ensure every row has an id
-  state.entries.forEach(r => { if (!r.id) r.id = uid(); });
-  state.exits.forEach(r => { if (!r.id) r.id = uid(); });
-  render();
-}
-
-// ----- Print -----
-$('entryPrintBtn').addEventListener('click', () => printLedger('entry'));
-$('exitPrintBtn').addEventListener('click', () => printLedger('exit'));
-
-function printLedger(kind) {
-  const list = kind === 'entry' ? state.entries : state.exits;
-  const total = list.reduce((s, r) => s + Number(r.principalAmount || 0), 0);
-  const now = new Date().toLocaleString('en-PH');
-
-  let html = '';
-  if (kind === 'entry') {
-    html = `
-      <div class="print-title">Vault Entry Form: Prenda Transaction (OMEE/2MEE/FRA/Backdating)</div>
-      <div class="print-branch">
-        <span class="pb-item">Branch Name: <span class="pb-line">${esc(state.branchName || '')}</span></span>
-        <span class="pb-item">User: <span class="pb-line">${esc(state.userName || '')}</span></span>
-      </div>
-      <table class="print-table">
-        <thead>
-          <tr>
-            <th style="width:10%">Date</th>
-            <th style="width:10%">PT No.</th>
-            <th style="width:32%">Item Description</th>
-            <th style="width:14%">Principal Amount</th>
-            <th style="width:20%">Transaction Type<br>(NP/Ren/Re-app/OMEE/2MEE/BD)</th>
-            <th style="width:14%">Signature</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${list.map(r => `
-            <tr>
-              <td>${esc(fmtDate(r.date))}</td>
-              <td>${esc(r.ptNo)}</td>
-              <td>${esc(r.itemDescription)}</td>
-              <td class="numeric">${fmt(r.principalAmount)}</td>
-              <td>${esc(r.transactionType)}</td>
-              <td>${esc(r.signature || '')}</td>
-            </tr>`).join('') || '<tr><td colspan="6" style="text-align:center;padding:20px">No records</td></tr>'}
-        </tbody>
-        <tfoot>
-          <tr>
-            <td colspan="3" style="text-align:right">TOTAL</td>
-            <td class="numeric">${fmt(total)}</td>
-            <td colspan="2"></td>
-          </tr>
-        </tfoot>
-      </table>
-      <div class="print-meta">
-        <span>Printed: ${esc(now)}</span>
-        <span>Records: ${list.length}</span>
-      </div>
-    `;
-  } else {
-    html = `
-      <div class="print-title">Vault Exit Form: Renewal / Redemption / Re-appraisal / OMEE / 2MEE Transaction</div>
-      <div class="print-branch">
-        <span class="pb-item">Branch Name: <span class="pb-line">${esc(state.branchName || '')}</span></span>
-        <span class="pb-item">User: <span class="pb-line">${esc(state.userName || '')}</span></span>
-      </div>
-      <table class="print-table">
-        <thead>
-          <tr>
-            <th style="width:10%">PT No.</th>
-            <th style="width:12%">Loan Date</th>
-            <th style="width:32%">Item Description</th>
-            <th style="width:14%">Principal Amount</th>
-            <th style="width:18%">Transaction Type<br>(Ren/Red/Re-app)</th>
-            <th style="width:14%">Time of Transaction</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${list.map(r => `
-            <tr>
-              <td>${esc(r.ptNo)}</td>
-              <td>${esc(fmtDate(r.loanDate))}</td>
-              <td>${esc(r.itemDescription)}</td>
-              <td class="numeric">${fmt(r.principalAmount)}</td>
-              <td>${esc(r.transactionType)}</td>
-              <td>${esc(fmtTime(r.timeOfTransaction))}</td>
-            </tr>`).join('') || '<tr><td colspan="6" style="text-align:center;padding:20px">No records</td></tr>'}
-        </tbody>
-        <tfoot>
-          <tr>
-            <td colspan="3" style="text-align:right">TOTAL</td>
-            <td class="numeric">${fmt(total)}</td>
-            <td colspan="2"></td>
-          </tr>
-        </tfoot>
-      </table>
-      <div class="print-meta">
-        <span>Printed: ${esc(now)}</span>
-        <span>Records: ${list.length}</span>
-      </div>
-    `;
-  }
-  $('printArea').innerHTML = html;
-  window.print();
-}
-
-// ----- Keyboard shortcuts -----
-window.addEventListener('keydown', (e) => {
-  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
-    e.preventDefault();
-    saveToFile(false);
-  }
-});
-
-// ----- Warn before unload if dirty -----
-window.addEventListener('beforeunload', (e) => {
-  if (dirty) { e.preventDefault(); e.returnValue = ''; }
-});
-
-// ===== DASHBOARD =====
-let dashRange = 'all';
-let trendMetric = 'count';  // 'count' or 'amount'
-let activeSearchText = '';
-
-const TYPE_COLORS = {
-  // Entry types
-  'NP':      '#2f6f4f',
-  'Ren':     '#2c5282',
-  'Re-app':  '#8a5a2b',
-  'OMEE':    '#6b2c82',
-  '2MEE':    '#822c5c',
-  'BD':      '#822c2c',
-  // Exit-only
-  'Red':     '#b45309'
-};
-
-function getRangeBounds(range) {
-  const now = new Date();
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  let start = null, end = null, label = 'All time';
-
-  if (range === 'today') {
-    start = today;
-    end = new Date(today.getTime() + 86400000);
-    label = 'Today';
-  } else if (range === '7d') {
-    start = new Date(today.getTime() - 6 * 86400000);
-    end = new Date(today.getTime() + 86400000);
-    label = 'Last 7 days';
-  } else if (range === '30d') {
-    start = new Date(today.getTime() - 29 * 86400000);
-    end = new Date(today.getTime() + 86400000);
-    label = 'Last 30 days';
-  } else if (range === 'month') {
-    start = new Date(now.getFullYear(), now.getMonth(), 1);
-    end = new Date(now.getFullYear(), now.getMonth() + 1, 1);
-    label = now.toLocaleDateString('en-PH', { month: 'long', year: 'numeric' });
-  } else if (range === 'year') {
-    start = new Date(now.getFullYear(), 0, 1);
-    end = new Date(now.getFullYear() + 1, 0, 1);
-    label = String(now.getFullYear());
-  }
-  return { start, end, label };
-}
-
-// Best-available effective date for filtering a record
-function recordDate(rec, kind) {
-  // Prefer explicit createdAt; else fall back to record date fields
-  if (rec.createdAt) return new Date(rec.createdAt);
-  if (kind === 'entry' && rec.date) return new Date(rec.date + 'T00:00:00');
-  if (kind === 'exit') {
-    if (rec.loanDate) return new Date(rec.loanDate + 'T00:00:00');
-  }
-  return null;
-}
-
-function inRange(rec, kind, bounds) {
-  if (!bounds.start) return true;  // all-time
-  const d = recordDate(rec, kind);
-  if (!d) return false;
-  return d >= bounds.start && d < bounds.end;
-}
-
-function getActivePawns() {
-  // Active = PT Nos present in entries but never redeemed (no exit with type 'Red')
-  const redeemed = new Set(
-    state.exits.filter(e => e.transactionType === 'Red').map(e => e.ptNo)
-  );
-  // For each PT No., keep the latest entry (by date)
-  const byPT = new Map();
-  state.entries.forEach(e => {
-    if (!e.ptNo) return;
-    const existing = byPT.get(e.ptNo);
-    if (!existing || (e.date || '') > (existing.date || '')) byPT.set(e.ptNo, e);
-  });
-  const active = [];
-  byPT.forEach((e, pt) => { if (!redeemed.has(pt)) active.push(e); });
-  return active;
-}
-
-function renderDashboard() {
-  const bounds = getRangeBounds(dashRange);
-  $('dashSubtitle').textContent = bounds.label;
-
-  const entries = state.entries.filter(r => inRange(r, 'entry', bounds));
-  const exits   = state.exits.filter(r   => inRange(r, 'exit',  bounds));
-
-  // ---- KPIs ----
-  const totalIn  = entries.reduce((s, r) => s + Number(r.principalAmount || 0), 0);
-  const totalOut = exits.reduce((s, r)   => s + Number(r.principalAmount || 0), 0);
-  const net = totalIn - totalOut;
-
-  $('kpiEntries').textContent = entries.length;
-  $('kpiExits').textContent   = exits.length;
-  $('kpiIn').textContent      = fmt(totalIn);
-  $('kpiOut').textContent     = fmt(totalOut);
-  $('kpiNet').textContent     = fmt(Math.abs(net));
-  $('kpiNetSign').textContent = net < 0 ? '-₱' : '₱';
-  $('kpiNetSub').textContent  = net >= 0 ? 'net inflow' : 'net outflow';
-
-  const netCard = document.querySelector('.kpi-card[data-kind="net"]');
-  netCard.classList.remove('positive', 'negative');
-  if (net > 0) netCard.classList.add('positive');
-  else if (net < 0) netCard.classList.add('negative');
-
-  // Active pawns uses ALL data regardless of filter (it's an always-current count)
-  const active = getActivePawns();
-  $('kpiActive').textContent = active.length;
-
-  // ---- Donut charts ----
-  renderDonut('entry', entries);
-  renderDonut('exit', exits);
-
-  // ---- Line chart ----
-  renderLineChart(entries, exits, bounds);
-
-  // ---- Active pawns table ----
-  renderActivePawns(active);
-}
-
-function renderDonut(kind, records) {
-  const svg = $(kind === 'entry' ? 'donutEntry' : 'donutExit');
-  const legend = $(kind === 'entry' ? 'donutEntryLegend' : 'donutExitLegend');
-  const totalEl = $(kind === 'entry' ? 'donutEntryTotal' : 'donutExitTotal');
-
-  // Aggregate by type
-  const groups = {};
-  records.forEach(r => {
-    const t = r.transactionType || '—';
-    groups[t] = (groups[t] || 0) + 1;
-  });
-  const data = Object.keys(groups)
-    .map(k => ({ label: k, value: groups[k], color: TYPE_COLORS[k] || '#888' }))
-    .sort((a, b) => b.value - a.value);
-
-  const total = data.reduce((s, d) => s + d.value, 0);
-  totalEl.textContent = `${total} total`;
-
-  if (total === 0) {
-    svg.innerHTML = `<circle cx="100" cy="100" r="70" fill="none" stroke="#f2ede1" stroke-width="30"/>
-      <text class="center-value" x="100" y="100" text-anchor="middle" dominant-baseline="middle">—</text>`;
-    legend.innerHTML = '<div class="donut-empty">No data in this range</div>';
-    return;
   }
 
-  // Build donut segments
-  const cx = 100, cy = 100, r = 70, stroke = 30;
-  const circumference = 2 * Math.PI * r;
-  let offset = 0;
-  let segs = `<circle class="bg-ring" cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke-width="${stroke}"/>`;
-  data.forEach(d => {
-    const segLen = (d.value / total) * circumference;
-    const dash = `${segLen - 1} ${circumference - segLen + 1}`; // small gap
-    segs += `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${d.color}" stroke-width="${stroke}" stroke-dasharray="${dash}" stroke-dashoffset="${-offset}" transform="rotate(-90 ${cx} ${cy})"/>`;
-    offset += segLen;
-  });
-  segs += `<text class="center-value" x="${cx}" y="${cy - 4}" text-anchor="middle" dominant-baseline="middle">${total}</text>`;
-  segs += `<text class="center-label" x="${cx}" y="${cy + 18}" text-anchor="middle">TRANSACTIONS</text>`;
-  svg.innerHTML = segs;
+  function exportDb() {
+    const bytes = DB.exportBytes();
+    const blob = new Blob([bytes], { type: 'application/x-sqlite3' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = DB.getFileName() || defaultDbName();
+    a.click();
+    URL.revokeObjectURL(url);
+    if (!DB.hasFileAPI()) markDirty(false);
+    toast('Downloaded ' + a.download, 'success');
+  }
 
-  // Legend
-  legend.innerHTML = data.map(d => {
-    const pct = ((d.value / total) * 100).toFixed(1);
-    return `<div class="legend-row">
-      <div class="swatch" style="background:${d.color}"></div>
-      <div class="label">${esc(d.label)}</div>
-      <div class="count">${d.value}</div>
-      <div class="pct">${pct}%</div>
-    </div>`;
-  }).join('');
-}
+  function defaultDbName() {
+    const b = (DB.getMeta('branch_name') || 'branch').replace(/[^A-Za-z0-9]/g, '_');
+    const d = new Date().toISOString().slice(0, 10);
+    return `vault_${b}_${d}.db`;
+  }
 
-function renderLineChart(entries, exits, bounds) {
-  const svg = $('lineChart');
-  const W = 900, H = 280;
-  const padL = 50, padR = 20, padT = 20, padB = 40;
-  const innerW = W - padL - padR;
-  const innerH = H - padT - padB;
+  // ---- User menu ----
+  function setupUserMenu() {
+    const chip = $('userChip');
+    chip.addEventListener('click', (e) => {
+      e.stopPropagation();
+      chip.classList.toggle('open');
+    });
+    document.addEventListener('click', () => chip.classList.remove('open'));
 
-  // Determine the date range: use bounds if set, else span min..max of the data
-  let start = bounds.start, end = bounds.end;
-  if (!start) {
-    const allDates = [];
-    entries.forEach(r => { const d = recordDate(r, 'entry'); if (d) allDates.push(d); });
-    exits.forEach(r   => { const d = recordDate(r, 'exit');  if (d) allDates.push(d); });
-    if (!allDates.length) {
-      svg.innerHTML = `<text class="empty-text" x="${W/2}" y="${H/2}" text-anchor="middle">No data to chart</text>`;
+    $('menuLogout').addEventListener('click', () => {
+      Auth.logout('manual');
+      showScreen('loginScreen');
+      $('loginUsername').value = '';
+      $('loginPassword').value = '';
+      $('loginUsername').focus();
+      $('loginDbName').textContent = DB.getFileName() || '(in-memory)';
+      toast('Signed out', '');
+    });
+
+    $('menuChangePassword').addEventListener('click', () => {
+      $('cp_current').value = '';
+      $('cp_new').value = '';
+      $('cp_confirm').value = '';
+      $('changePasswordError').textContent = '';
+      $('changePasswordDialog').showModal();
+    });
+
+    $('cpCancel').addEventListener('click', () => $('changePasswordDialog').close());
+    $('changePasswordForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const err = $('changePasswordError');
+      err.textContent = '';
+      const cur = $('cp_current').value;
+      const n1 = $('cp_new').value;
+      const n2 = $('cp_confirm').value;
+      if (n1 !== n2) { err.textContent = 'Passwords do not match.'; return; }
+      if (n1.length < 8) { err.textContent = 'Password must be at least 8 characters.'; return; }
+      const result = await Auth.changePassword(Auth.currentUserRecord().id, cur, n1);
+      if (!result.ok) { err.textContent = result.error; return; }
+      markDirty();
+      $('changePasswordDialog').close();
+      toast('Password changed ✓', 'success');
+    });
+  }
+
+  // ---- USERS TAB ----
+  function setupUsersTab() {
+    $('newUserForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      if (!Auth.can('manage_users')) return;
+      const username = $('nu_username').value.trim();
+      const fullName = $('nu_fullname').value.trim();
+      const role = $('nu_role').value;
+      const password = $('nu_password').value;
+      if (!/^[a-zA-Z0-9_.-]{3,32}$/.test(username)) {
+        toast('Username must be 3-32 chars (letters, digits, _ . - only).', 'error');
+        return;
+      }
+      if (password.length < 8) { toast('Password must be at least 8 characters.', 'error'); return; }
+      const result = await Auth.createUserAccount({ username, fullName, role, password });
+      if (!result.ok) { toast(result.error, 'error'); return; }
+      markDirty();
+      renderUsersTable();
+      renderAuditTable();
+      $('newUserForm').reset();
+      toast(`User ${username} created ✓`, 'success');
+    });
+    $('newUserResetBtn').addEventListener('click', () => $('newUserForm').reset());
+
+    // Reset password dialog
+    $('rpCancel').addEventListener('click', () => $('resetPasswordDialog').close());
+    $('resetPasswordForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const err = $('resetPasswordError');
+      err.textContent = '';
+      const n1 = $('rp_new').value;
+      const n2 = $('rp_confirm').value;
+      if (n1 !== n2) { err.textContent = 'Passwords do not match.'; return; }
+      if (n1.length < 8) { err.textContent = 'Must be at least 8 characters.'; return; }
+      const userId = Number($('resetPasswordDialog').dataset.userId);
+      const result = await Auth.adminResetPassword(userId, n1);
+      if (!result.ok) { err.textContent = result.error; return; }
+      markDirty();
+      renderAuditTable();
+      $('resetPasswordDialog').close();
+      toast('Password reset ✓', 'success');
+    });
+  }
+
+  function openResetPasswordDialog(userId) {
+    const u = DB.findUserById(userId);
+    if (!u) return;
+    $('rpUsername').textContent = u.username;
+    $('rp_new').value = '';
+    $('rp_confirm').value = '';
+    $('resetPasswordError').textContent = '';
+    $('resetPasswordDialog').dataset.userId = userId;
+    $('resetPasswordDialog').showModal();
+  }
+
+  async function toggleUserActive(userId) {
+    const u = DB.findUserById(userId);
+    if (!u) return;
+    const current = Auth.currentUserRecord();
+    if (u.id === current.id) { toast('Cannot disable your own account.', 'error'); return; }
+    const willDisable = !!u.is_active;
+    const ok = await confirmDialog(
+      willDisable ? 'Disable user?' : 'Enable user?',
+      willDisable ? `${u.username} will no longer be able to sign in.` : `${u.username} will be able to sign in again.`
+    );
+    if (!ok) return;
+    DB.setUserActive(userId, !u.is_active);
+    DB.audit(current, willDisable ? 'disable_user' : 'enable_user', 'user', userId, u.username);
+    markDirty();
+    renderUsersTable();
+    renderAuditTable();
+    toast(`User ${willDisable ? 'disabled' : 'enabled'} ✓`, 'success');
+  }
+
+  async function changeUserRole(userId, newRole) {
+    const u = DB.findUserById(userId);
+    if (!u) return;
+    const current = Auth.currentUserRecord();
+    if (u.id === current.id && newRole !== 'admin') {
+      toast('Cannot demote yourself from admin.', 'error');
+      renderUsersTable();
       return;
     }
-    allDates.sort((a, b) => a - b);
-    start = new Date(allDates[0].getFullYear(), allDates[0].getMonth(), allDates[0].getDate());
-    const last = allDates[allDates.length - 1];
-    end = new Date(last.getFullYear(), last.getMonth(), last.getDate() + 1);
+    if (u.role === newRole) return;
+    DB.updateUserRole(userId, newRole);
+    DB.audit(current, 'change_role', 'user', userId, `${u.role} → ${newRole}`);
+    markDirty();
+    renderUsersTable();
+    renderAuditTable();
+    toast(`Role changed to ${newRole}`, 'success');
   }
 
-  // Build daily buckets
-  const dayMs = 86400000;
-  const dayCount = Math.max(1, Math.round((end - start) / dayMs));
-  if (dayCount > 366) {
-    svg.innerHTML = `<text class="empty-text" x="${W/2}" y="${H/2}" text-anchor="middle">Range too wide for daily view</text>`;
-    return;
+  async function deleteUserConfirm(userId) {
+    const u = DB.findUserById(userId);
+    if (!u) return;
+    const current = Auth.currentUserRecord();
+    if (u.id === current.id) { toast('Cannot delete your own account.', 'error'); return; }
+    // Count records that will be orphaned
+    const entryCount = DB.scalar('SELECT COUNT(*) FROM entries WHERE created_by = ?', [userId]) || 0;
+    const exitCount = DB.scalar('SELECT COUNT(*) FROM exits WHERE created_by = ?', [userId]) || 0;
+    const detail = (entryCount + exitCount) > 0
+      ? `${u.username} has ${entryCount} entries and ${exitCount} exits. Those records will remain but show as "deleted user".`
+      : `${u.username} has no records. Account will be removed.`;
+    const ok = await confirmDialog('Delete user?', detail);
+    if (!ok) return;
+    DB.deleteUser(userId);
+    DB.audit(current, 'delete_user', 'user', userId, u.username);
+    markDirty();
+    renderUsersTable();
+    renderAuditTable();
+    toast('User deleted', 'error');
   }
 
-  const days = [];
-  for (let i = 0; i < dayCount; i++) {
-    const d = new Date(start.getTime() + i * dayMs);
-    days.push({ date: d, entryCount: 0, entryAmt: 0, exitCount: 0, exitAmt: 0 });
-  }
-  const idx = (d) => Math.floor((new Date(d.getFullYear(), d.getMonth(), d.getDate()) - start) / dayMs);
-
-  entries.forEach(r => {
-    const d = recordDate(r, 'entry'); if (!d) return;
-    const i = idx(d); if (i < 0 || i >= dayCount) return;
-    days[i].entryCount++;
-    days[i].entryAmt += Number(r.principalAmount || 0);
-  });
-  exits.forEach(r => {
-    const d = recordDate(r, 'exit'); if (!d) return;
-    const i = idx(d); if (i < 0 || i >= dayCount) return;
-    days[i].exitCount++;
-    days[i].exitAmt += Number(r.principalAmount || 0);
-  });
-
-  const metricField = trendMetric === 'count' ? 'Count' : 'Amt';
-  const entryVals = days.map(d => d['entry' + metricField]);
-  const exitVals  = days.map(d => d['exit'  + metricField]);
-  const maxV = Math.max(1, ...entryVals, ...exitVals);
-
-  if (maxV === 1 && entryVals.every(v => v === 0) && exitVals.every(v => v === 0)) {
-    svg.innerHTML = `<text class="empty-text" x="${W/2}" y="${H/2}" text-anchor="middle">No transactions in this range</text>`;
-    return;
-  }
-
-  const xAt = (i) => padL + (dayCount === 1 ? innerW / 2 : (i / (dayCount - 1)) * innerW);
-  const yAt = (v) => padT + innerH - (v / maxV) * innerH;
-
-  // Grid lines + y-axis labels (4 gridlines)
-  let grid = '';
-  const ticks = 4;
-  for (let t = 0; t <= ticks; t++) {
-    const y = padT + (t / ticks) * innerH;
-    const val = maxV - (t / ticks) * maxV;
-    grid += `<line class="grid-line" x1="${padL}" y1="${y}" x2="${W - padR}" y2="${y}"/>`;
-    const labelVal = trendMetric === 'count' ? Math.round(val) : fmt(val);
-    grid += `<text class="axis-label" x="${padL - 6}" y="${y + 3}" text-anchor="end">${labelVal}</text>`;
+  function renderUsersTable() {
+    if (!Auth.can('manage_users')) return;
+    const users = DB.listUsers();
+    $('usersCount').textContent = users.length;
+    const current = Auth.currentUserRecord();
+    const tbody = $('usersTbody');
+    tbody.innerHTML = users.map(u => {
+      const isSelf = current && u.id === current.id;
+      const roleOpts = ['admin', 'supervisor', 'encoder', 'viewer']
+        .map(r => `<option value="${r}"${u.role === r ? ' selected' : ''}>${r}</option>`).join('');
+      return `<tr>
+        <td><strong>${esc(u.username)}</strong>${isSelf ? ' <span class="hint">(you)</span>' : ''}</td>
+        <td>${esc(u.full_name)}</td>
+        <td>
+          <select data-act="change-role" data-id="${u.id}" class="inline-select" onchange="this.blur()">${roleOpts}</select>
+        </td>
+        <td><span class="status-badge ${u.is_active ? 'active' : 'disabled'}">${u.is_active ? 'Active' : 'Disabled'}</span></td>
+        <td>${esc(fmtDateTime(u.created_at))}</td>
+        <td>${esc(fmtDateTime(u.last_login_at))}</td>
+        <td class="row-actions">
+          <button class="btn-icon" data-act="reset-pw" data-id="${u.id}">Reset PW</button>
+          <button class="btn-icon" data-act="toggle-active" data-id="${u.id}">${u.is_active ? 'Disable' : 'Enable'}</button>
+          ${!isSelf ? `<button class="btn-danger" data-act="delete-user" data-id="${u.id}">Delete</button>` : ''}
+        </td>
+      </tr>`;
+    }).join('');
+    // Role select uses 'change' not 'click'
+    tbody.querySelectorAll('select[data-act="change-role"]').forEach(sel => {
+      sel.addEventListener('change', () => changeUserRole(Number(sel.dataset.id), sel.value));
+    });
   }
 
-  // X-axis labels — show up to ~6 evenly spaced
-  const xLabelCount = Math.min(6, dayCount);
-  let xLabels = '';
-  for (let i = 0; i < xLabelCount; i++) {
-    const dayI = Math.round((i / Math.max(1, xLabelCount - 1)) * (dayCount - 1));
-    const d = days[dayI].date;
-    const txt = d.toLocaleDateString('en-PH', { month: 'short', day: 'numeric' });
-    xLabels += `<text class="axis-label" x="${xAt(dayI)}" y="${H - padB + 16}" text-anchor="middle">${txt}</text>`;
+  // ---- AUDIT TAB ----
+  function renderAuditTable() {
+    if (!Auth.can('view_audit')) return;
+    const rows = DB.listAudit(500);
+    const q = searchText.audit.toLowerCase().trim();
+    let filtered = rows;
+    if (q) filtered = rows.filter(r => Object.values(r).some(v => String(v ?? '').toLowerCase().includes(q)));
+    $('auditCount').textContent = rows.length;
+    const tbody = $('auditTbody');
+    if (!filtered.length) {
+      tbody.innerHTML = `<tr class="empty-row"><td colspan="5">${q ? 'No matches.' : 'No audit entries yet.'}</td></tr>`;
+      return;
+    }
+    tbody.innerHTML = filtered.map(r => `<tr>
+      <td>${esc(fmtDateTime(r.at))}</td>
+      <td>${esc(r.username || '—')}</td>
+      <td><span class="badge">${esc(r.action)}</span></td>
+      <td>${esc((r.target_type || '') + (r.target_id ? ' #' + r.target_id : ''))}</td>
+      <td>${esc(r.details || '')}</td>
+    </tr>`).join('');
   }
 
-  const buildPath = (vals, close) => {
-    const pts = vals.map((v, i) => `${xAt(i)},${yAt(v)}`);
-    let p = 'M' + pts.join(' L');
-    if (close) p += ` L${xAt(dayCount - 1)},${padT + innerH} L${xAt(0)},${padT + innerH} Z`;
-    return p;
+  // ---- DASHBOARD ----
+  const TYPE_COLORS = {
+    'NP': '#2f6f4f', 'Ren': '#2c5282', 'Re-app': '#8a5a2b',
+    'OMEE': '#6b2c82', '2MEE': '#822c5c', 'BD': '#822c2c', 'Red': '#b45309'
   };
 
-  const entryArea = buildPath(entryVals, true);
-  const entryLine = buildPath(entryVals, false);
-  const exitArea  = buildPath(exitVals, true);
-  const exitLine  = buildPath(exitVals, false);
-
-  const dots = (vals, cls) => vals.map((v, i) => v > 0 ? `<circle class="${cls}" cx="${xAt(i)}" cy="${yAt(v)}" r="2.5"/>` : '').join('');
-
-  svg.innerHTML = `
-    ${grid}
-    <path class="entry-area" d="${entryArea}"/>
-    <path class="exit-area"  d="${exitArea}"/>
-    <path class="exit-line"  d="${exitLine}"/>
-    <path class="entry-line" d="${entryLine}"/>
-    ${dots(exitVals, 'exit-dot')}
-    ${dots(entryVals, 'entry-dot')}
-    <line class="axis-line" x1="${padL}" y1="${padT + innerH}" x2="${W - padR}" y2="${padT + innerH}"/>
-    ${xLabels}
-  `;
-}
-
-function renderActivePawns(active) {
-  const tbody = $('activeTbody');
-  const totalEl = $('activeTotal');
-  const countEl = $('activeCount');
-  countEl.textContent = active.length;
-
-  const q = activeSearchText.toLowerCase().trim();
-  let rows = active.slice();
-  if (q) {
-    rows = rows.filter(r => Object.values(r).some(v => String(v).toLowerCase().includes(q)));
-  }
-  // Sort by date descending (newest first)
-  rows.sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
-
-  const total = active.reduce((s, r) => s + Number(r.principalAmount || 0), 0);
-  totalEl.textContent = fmt(total);
-
-  if (!rows.length) {
-    tbody.innerHTML = `<tr class="empty-row"><td colspan="6">${q ? 'No matches.' : 'No active pawns. All entries have been redeemed, or no entries exist yet.'}</td></tr>`;
-    return;
+  function getRangeBounds(range) {
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    let start = null, end = null, label = 'All time';
+    if (range === 'today') { start = today; end = new Date(today.getTime() + 86400000); label = 'Today'; }
+    else if (range === '7d')   { start = new Date(today.getTime() - 6*86400000);  end = new Date(today.getTime() + 86400000); label = 'Last 7 days'; }
+    else if (range === '30d')  { start = new Date(today.getTime() - 29*86400000); end = new Date(today.getTime() + 86400000); label = 'Last 30 days'; }
+    else if (range === 'month'){ start = new Date(now.getFullYear(), now.getMonth(), 1); end = new Date(now.getFullYear(), now.getMonth()+1, 1); label = now.toLocaleDateString('en-PH', { month: 'long', year: 'numeric' }); }
+    else if (range === 'year') { start = new Date(now.getFullYear(), 0, 1); end = new Date(now.getFullYear()+1, 0, 1); label = String(now.getFullYear()); }
+    return { start, end, label };
   }
 
-  const today = new Date();
-  const toDate = (s) => s ? new Date(s + 'T00:00:00') : null;
+  function recordDate(rec, kind) {
+    if (rec.created_at) return new Date(rec.created_at);
+    if (kind === 'entry' && rec.date) return new Date(rec.date + 'T00:00:00');
+    if (kind === 'exit' && rec.loan_date) return new Date(rec.loan_date + 'T00:00:00');
+    return null;
+  }
 
-  tbody.innerHTML = rows.map(r => {
-    const d = toDate(r.date);
-    const days = d ? Math.max(0, Math.floor((today - d) / 86400000)) : '—';
-    const badge = days === '—' ? 'fresh' : (days <= 30 ? 'fresh' : days <= 90 ? 'medium' : 'old');
-    const badgeText = days === '—' ? '—' : `${days}d`;
-    return `<tr>
-      <td>${esc(r.ptNo)}</td>
-      <td>${esc(fmtDate(r.date))}</td>
-      <td>${esc(r.itemDescription)}</td>
-      <td class="numeric">${fmt(r.principalAmount)}</td>
-      <td><span class="badge ${esc((r.transactionType || '').replace(/[^A-Za-z0-9-]/g, '-'))}">${esc(r.transactionType || '')}</span></td>
-      <td class="numeric"><span class="days-badge ${badge}">${badgeText}</span></td>
-    </tr>`;
-  }).join('');
-}
+  function inRange(rec, kind, bounds) {
+    if (!bounds.start) return true;
+    const d = recordDate(rec, kind);
+    if (!d) return false;
+    return d >= bounds.start && d < bounds.end;
+  }
 
-// ---- Dashboard event wiring ----
-$('dashRange').addEventListener('change', (e) => {
-  dashRange = e.target.value;
-  renderDashboard();
-});
+  function getActivePawns() {
+    const allEntries = allEntriesForActive();
+    const allExits = allExitsForActive();
+    const redeemed = new Set(allExits.filter(e => e.transaction_type === 'Red').map(e => e.pt_no));
+    const byPT = new Map();
+    allEntries.forEach(e => {
+      if (!e.pt_no) return;
+      const ex = byPT.get(e.pt_no);
+      if (!ex || (e.date || '') > (ex.date || '')) byPT.set(e.pt_no, e);
+    });
+    const active = [];
+    byPT.forEach((e, pt) => { if (!redeemed.has(pt)) active.push(e); });
+    return active;
+  }
 
-document.querySelectorAll('.chart-toggle .toggle-btn').forEach(btn => {
-  btn.addEventListener('click', () => {
-    document.querySelectorAll('.chart-toggle .toggle-btn').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-    trendMetric = btn.dataset.metric;
-    renderDashboard();
-  });
-});
+  function renderDashboard() {
+    if (!$('dashSubtitle')) return;
+    const bounds = getRangeBounds(dashRange);
+    $('dashSubtitle').textContent = bounds.label;
 
-$('activeSearch').addEventListener('input', (e) => {
-  activeSearchText = e.target.value;
-  renderActivePawns(getActivePawns());
-});
+    const allE = entries();
+    const allX = exits();
+    const rangeE = allE.filter(r => inRange(r, 'entry', bounds));
+    const rangeX = allX.filter(r => inRange(r, 'exit', bounds));
 
-$('activePrintBtn').addEventListener('click', () => printActivePawns());
+    const totalIn = rangeE.reduce((s, r) => s + Number(r.principal_amount || 0), 0);
+    const totalOut = rangeX.reduce((s, r) => s + Number(r.principal_amount || 0), 0);
+    const net = totalIn - totalOut;
 
-function printActivePawns() {
-  const active = getActivePawns();
-  const total = active.reduce((s, r) => s + Number(r.principalAmount || 0), 0);
-  const today = new Date();
-  const toDate = (s) => s ? new Date(s + 'T00:00:00') : null;
-  const now = today.toLocaleString('en-PH');
+    $('kpiEntries').textContent = rangeE.length;
+    $('kpiExits').textContent = rangeX.length;
+    $('kpiIn').textContent = fmt(totalIn);
+    $('kpiOut').textContent = fmt(totalOut);
+    $('kpiNet').textContent = fmt(Math.abs(net));
+    $('kpiNetSign').textContent = net < 0 ? '-₱' : '₱';
+    $('kpiNetSub').textContent = net >= 0 ? 'net inflow' : 'net outflow';
+    const netCard = document.querySelector('.kpi-card[data-kind="net"]');
+    netCard.classList.remove('positive', 'negative');
+    if (net > 0) netCard.classList.add('positive');
+    else if (net < 0) netCard.classList.add('negative');
 
-  const rowsHtml = active.sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))
-    .map(r => {
+    $('kpiActive').textContent = getActivePawns().length;
+
+    renderDonut('entry', rangeE);
+    renderDonut('exit', rangeX);
+    renderLineChart(rangeE, rangeX, bounds);
+    renderActivePawns();
+  }
+
+  function renderDonut(kind, records) {
+    const svg = $(kind === 'entry' ? 'donutEntry' : 'donutExit');
+    const legend = $(kind === 'entry' ? 'donutEntryLegend' : 'donutExitLegend');
+    const totalEl = $(kind === 'entry' ? 'donutEntryTotal' : 'donutExitTotal');
+
+    const groups = {};
+    records.forEach(r => {
+      const t = r.transaction_type || '—';
+      groups[t] = (groups[t] || 0) + 1;
+    });
+    const data = Object.keys(groups)
+      .map(k => ({ label: k, value: groups[k], color: TYPE_COLORS[k] || '#888' }))
+      .sort((a, b) => b.value - a.value);
+    const total = data.reduce((s, d) => s + d.value, 0);
+    totalEl.textContent = `${total} total`;
+
+    if (total === 0) {
+      svg.innerHTML = `<circle cx="100" cy="100" r="70" fill="none" stroke="#f2ede1" stroke-width="30"/>
+        <text class="center-value" x="100" y="100" text-anchor="middle" dominant-baseline="middle">—</text>`;
+      legend.innerHTML = '<div class="donut-empty">No data in this range</div>';
+      return;
+    }
+
+    const cx = 100, cy = 100, r = 70, stroke = 30;
+    const circumference = 2 * Math.PI * r;
+    let offset = 0;
+    let segs = `<circle class="bg-ring" cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke-width="${stroke}"/>`;
+    data.forEach(d => {
+      const segLen = (d.value / total) * circumference;
+      const dash = `${segLen - 1} ${circumference - segLen + 1}`;
+      segs += `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${d.color}" stroke-width="${stroke}" stroke-dasharray="${dash}" stroke-dashoffset="${-offset}" transform="rotate(-90 ${cx} ${cy})"/>`;
+      offset += segLen;
+    });
+    segs += `<text class="center-value" x="${cx}" y="${cy-4}" text-anchor="middle" dominant-baseline="middle">${total}</text>`;
+    segs += `<text class="center-label" x="${cx}" y="${cy+18}" text-anchor="middle">TRANSACTIONS</text>`;
+    svg.innerHTML = segs;
+
+    legend.innerHTML = data.map(d => {
+      const pct = ((d.value / total) * 100).toFixed(1);
+      return `<div class="legend-row">
+        <div class="swatch" style="background:${d.color}"></div>
+        <div class="label">${esc(d.label)}</div>
+        <div class="count">${d.value}</div>
+        <div class="pct">${pct}%</div>
+      </div>`;
+    }).join('');
+  }
+
+  function renderLineChart(rangeE, rangeX, bounds) {
+    const svg = $('lineChart');
+    const W = 900, H = 280;
+    const padL = 50, padR = 20, padT = 20, padB = 40;
+    const innerW = W - padL - padR;
+    const innerH = H - padT - padB;
+
+    let start = bounds.start, end = bounds.end;
+    if (!start) {
+      const allD = [];
+      rangeE.forEach(r => { const d = recordDate(r, 'entry'); if (d) allD.push(d); });
+      rangeX.forEach(r => { const d = recordDate(r, 'exit'); if (d) allD.push(d); });
+      if (!allD.length) {
+        svg.innerHTML = `<text class="empty-text" x="${W/2}" y="${H/2}" text-anchor="middle">No data to chart</text>`;
+        return;
+      }
+      allD.sort((a, b) => a - b);
+      start = new Date(allD[0].getFullYear(), allD[0].getMonth(), allD[0].getDate());
+      const last = allD[allD.length - 1];
+      end = new Date(last.getFullYear(), last.getMonth(), last.getDate() + 1);
+    }
+
+    const dayMs = 86400000;
+    const dayCount = Math.max(1, Math.round((end - start) / dayMs));
+    if (dayCount > 366) {
+      svg.innerHTML = `<text class="empty-text" x="${W/2}" y="${H/2}" text-anchor="middle">Range too wide for daily view</text>`;
+      return;
+    }
+
+    const days = [];
+    for (let i = 0; i < dayCount; i++) {
+      days.push({ date: new Date(start.getTime() + i*dayMs), entryCount: 0, entryAmt: 0, exitCount: 0, exitAmt: 0 });
+    }
+    const idx = (d) => Math.floor((new Date(d.getFullYear(), d.getMonth(), d.getDate()) - start) / dayMs);
+    rangeE.forEach(r => {
+      const d = recordDate(r, 'entry'); if (!d) return;
+      const i = idx(d); if (i < 0 || i >= dayCount) return;
+      days[i].entryCount++; days[i].entryAmt += Number(r.principal_amount || 0);
+    });
+    rangeX.forEach(r => {
+      const d = recordDate(r, 'exit'); if (!d) return;
+      const i = idx(d); if (i < 0 || i >= dayCount) return;
+      days[i].exitCount++; days[i].exitAmt += Number(r.principal_amount || 0);
+    });
+
+    const metricField = trendMetric === 'count' ? 'Count' : 'Amt';
+    const entryVals = days.map(d => d['entry' + metricField]);
+    const exitVals = days.map(d => d['exit' + metricField]);
+    const maxV = Math.max(1, ...entryVals, ...exitVals);
+
+    if (entryVals.every(v => v === 0) && exitVals.every(v => v === 0)) {
+      svg.innerHTML = `<text class="empty-text" x="${W/2}" y="${H/2}" text-anchor="middle">No transactions in this range</text>`;
+      return;
+    }
+
+    const xAt = (i) => padL + (dayCount === 1 ? innerW/2 : (i/(dayCount-1))*innerW);
+    const yAt = (v) => padT + innerH - (v/maxV)*innerH;
+
+    let grid = '';
+    const ticks = 4;
+    for (let t = 0; t <= ticks; t++) {
+      const y = padT + (t/ticks)*innerH;
+      const val = maxV - (t/ticks)*maxV;
+      grid += `<line class="grid-line" x1="${padL}" y1="${y}" x2="${W-padR}" y2="${y}"/>`;
+      const lbl = trendMetric === 'count' ? Math.round(val) : fmt(val);
+      grid += `<text class="axis-label" x="${padL-6}" y="${y+3}" text-anchor="end">${lbl}</text>`;
+    }
+
+    const xLabelCount = Math.min(6, dayCount);
+    let xLabels = '';
+    for (let i = 0; i < xLabelCount; i++) {
+      const dayI = Math.round((i/Math.max(1, xLabelCount-1))*(dayCount-1));
+      const d = days[dayI].date;
+      xLabels += `<text class="axis-label" x="${xAt(dayI)}" y="${H-padB+16}" text-anchor="middle">${d.toLocaleDateString('en-PH', { month:'short', day:'numeric' })}</text>`;
+    }
+
+    const buildPath = (vals, close) => {
+      const pts = vals.map((v, i) => `${xAt(i)},${yAt(v)}`);
+      let p = 'M' + pts.join(' L');
+      if (close) p += ` L${xAt(dayCount-1)},${padT+innerH} L${xAt(0)},${padT+innerH} Z`;
+      return p;
+    };
+
+    const dots = (vals, cls) => vals.map((v, i) => v > 0 ? `<circle class="${cls}" cx="${xAt(i)}" cy="${yAt(v)}" r="2.5"/>` : '').join('');
+
+    svg.innerHTML = `
+      ${grid}
+      <path class="entry-area" d="${buildPath(entryVals, true)}"/>
+      <path class="exit-area" d="${buildPath(exitVals, true)}"/>
+      <path class="exit-line" d="${buildPath(exitVals, false)}"/>
+      <path class="entry-line" d="${buildPath(entryVals, false)}"/>
+      ${dots(exitVals, 'exit-dot')}
+      ${dots(entryVals, 'entry-dot')}
+      <line class="axis-line" x1="${padL}" y1="${padT+innerH}" x2="${W-padR}" y2="${padT+innerH}"/>
+      ${xLabels}
+    `;
+  }
+
+  function renderActivePawns() {
+    const active = getActivePawns();
+    const q = searchText.active.toLowerCase().trim();
+    let rows = active.slice();
+    if (q) rows = rows.filter(r => Object.values(r).some(v => String(v ?? '').toLowerCase().includes(q)));
+    rows.sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
+
+    const total = active.reduce((s, r) => s + Number(r.principal_amount || 0), 0);
+    $('activeTotal').textContent = fmt(total);
+    $('activeCount').textContent = active.length;
+
+    const tbody = $('activeTbody');
+    if (!rows.length) {
+      tbody.innerHTML = `<tr class="empty-row"><td colspan="6">${q ? 'No matches.' : 'No active pawns.'}</td></tr>`;
+      return;
+    }
+
+    const today = new Date();
+    const toDate = (s) => s ? new Date(s + 'T00:00:00') : null;
+    tbody.innerHTML = rows.map(r => {
       const d = toDate(r.date);
-      const days = d ? Math.max(0, Math.floor((today - d) / 86400000)) : '—';
+      const days = d ? Math.max(0, Math.floor((today - d)/86400000)) : '—';
+      const badge = days === '—' ? 'fresh' : (days <= 30 ? 'fresh' : days <= 90 ? 'medium' : 'old');
+      const badgeText = days === '—' ? '—' : `${days}d`;
       return `<tr>
-        <td>${esc(r.ptNo)}</td>
+        <td>${esc(r.pt_no)}</td>
         <td>${esc(fmtDate(r.date))}</td>
-        <td>${esc(r.itemDescription)}</td>
-        <td class="numeric">${fmt(r.principalAmount)}</td>
-        <td>${esc(r.transactionType)}</td>
-        <td class="numeric">${days === '—' ? '—' : days + 'd'}</td>
+        <td>${esc(r.item_description)}</td>
+        <td class="numeric">${fmt(r.principal_amount)}</td>
+        <td><span class="badge ${esc((r.transaction_type||'').replace(/[^A-Za-z0-9-]/g, '-'))}">${esc(r.transaction_type||'')}</span></td>
+        <td class="numeric"><span class="days-badge ${badge}">${badgeText}</span></td>
       </tr>`;
-    }).join('') || '<tr><td colspan="6" style="text-align:center;padding:20px">No active pawns</td></tr>';
-
-  $('printArea').innerHTML = `
-    <div class="print-title">Active Pawns Report</div>
-    <div class="print-branch">
-      <span class="pb-item">Branch Name: <span class="pb-line">${esc(state.branchName || '')}</span></span>
-      <span class="pb-item">User: <span class="pb-line">${esc(state.userName || '')}</span></span>
-    </div>
-    <table class="print-table">
-      <thead>
-        <tr>
-          <th style="width:10%">PT No.</th>
-          <th style="width:12%">Entry Date</th>
-          <th style="width:38%">Item Description</th>
-          <th style="width:15%">Principal Amount</th>
-          <th style="width:13%">Type</th>
-          <th style="width:12%">Days in Vault</th>
-        </tr>
-      </thead>
-      <tbody>${rowsHtml}</tbody>
-      <tfoot>
-        <tr>
-          <td colspan="3" style="text-align:right">TOTAL PRINCIPAL</td>
-          <td class="numeric">${fmt(total)}</td>
-          <td colspan="2"></td>
-        </tr>
-      </tfoot>
-    </table>
-    <div class="print-meta">
-      <span>Printed: ${esc(now)}</span>
-      <span>Active pawns: ${active.length}</span>
-    </div>
-  `;
-  window.print();
-}
-
-// ----- Init -----
-(function init() {
-  // Footer year
-  $('footerYear').textContent = new Date().getFullYear();
-
-  // Set today as default
-  const today = new Date().toISOString().slice(0, 10);
-  $('e_date').value = today;
-  $('x_loanDate').value = today;
-  const now = new Date();
-  $('x_time').value = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
-
-  // Try to restore autosave
-  if (loadAutosave()) {
-    render();
-    markDirty(false);
-    toast('Restored from local autosave', 'success');
-  } else {
-    render();
-    markDirty(false);
+    }).join('');
   }
 
-  if (!hasFS) {
-    // Subtle hint for non-Chromium browsers
-    $('statusText').textContent = 'Browser does not support direct file save — use Export to download';
+  function setupDashboard() {
+    $('dashRange').addEventListener('change', (e) => { dashRange = e.target.value; renderDashboard(); });
+    document.querySelectorAll('.chart-toggle .toggle-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.chart-toggle .toggle-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        trendMetric = btn.dataset.metric;
+        renderDashboard();
+      });
+    });
   }
+
+  // ---- PRINT ----
+  function setupPrint() {
+    $('entryPrintBtn').addEventListener('click', () => printLedger('entry'));
+    $('exitPrintBtn').addEventListener('click', () => printLedger('exit'));
+    $('activePrintBtn').addEventListener('click', () => printActivePawns());
+  }
+
+  function printLedger(kind) {
+    const list = kind === 'entry' ? entries() : exits();
+    const total = list.reduce((s, r) => s + Number(r.principal_amount || 0), 0);
+    const now = new Date().toLocaleString('en-PH');
+    const user = Auth.currentUserRecord();
+    const branch = DB.getMeta('branch_name') || '';
+    const scope = Auth.scopeLabel();
+
+    let tableHtml = '';
+    if (kind === 'entry') {
+      tableHtml = `
+        <table class="print-table">
+          <thead><tr>
+            <th style="width:10%">Date</th><th style="width:10%">PT No.</th>
+            <th style="width:32%">Item Description</th><th style="width:14%">Principal Amount</th>
+            <th style="width:20%">Transaction Type<br>(NP/Ren/Re-app/OMEE/2MEE/BD)</th>
+            <th style="width:14%">Signature</th>
+          </tr></thead>
+          <tbody>${list.map(r => `<tr>
+            <td>${esc(fmtDate(r.date))}</td><td>${esc(r.pt_no)}</td>
+            <td>${esc(r.item_description)}</td><td class="numeric">${fmt(r.principal_amount)}</td>
+            <td>${esc(r.transaction_type)}</td><td>${esc(r.signature||'')}</td>
+          </tr>`).join('') || '<tr><td colspan="6" style="text-align:center;padding:20px">No records</td></tr>'}</tbody>
+          <tfoot><tr><td colspan="3" style="text-align:right">TOTAL</td><td class="numeric">${fmt(total)}</td><td colspan="2"></td></tr></tfoot>
+        </table>`;
+    } else {
+      tableHtml = `
+        <table class="print-table">
+          <thead><tr>
+            <th style="width:10%">PT No.</th><th style="width:12%">Loan Date</th>
+            <th style="width:32%">Item Description</th><th style="width:14%">Principal Amount</th>
+            <th style="width:18%">Transaction Type<br>(Ren/Red/Re-app)</th>
+            <th style="width:14%">Time of Transaction</th>
+          </tr></thead>
+          <tbody>${list.map(r => `<tr>
+            <td>${esc(r.pt_no)}</td><td>${esc(fmtDate(r.loan_date))}</td>
+            <td>${esc(r.item_description)}</td><td class="numeric">${fmt(r.principal_amount)}</td>
+            <td>${esc(r.transaction_type)}</td><td>${esc(fmtTime(r.time_of_transaction))}</td>
+          </tr>`).join('') || '<tr><td colspan="6" style="text-align:center;padding:20px">No records</td></tr>'}</tbody>
+          <tfoot><tr><td colspan="3" style="text-align:right">TOTAL</td><td class="numeric">${fmt(total)}</td><td colspan="2"></td></tr></tfoot>
+        </table>`;
+    }
+
+    const title = kind === 'entry'
+      ? 'Vault Entry Form: Prenda Transaction (OMEE/2MEE/FRA/Backdating)'
+      : 'Vault Exit Form: Renewal / Redemption / Re-appraisal / OMEE / 2MEE Transaction';
+
+    $('printArea').innerHTML = `
+      <div class="print-title">${title}</div>
+      <div class="print-branch">
+        <span class="pb-item">Branch Name: <span class="pb-line">${esc(branch)}</span></span>
+        <span class="pb-item">User: <span class="pb-line">${esc(user?.full_name || '')}</span></span>
+      </div>
+      ${tableHtml}
+      <div class="print-meta">
+        <span>Printed: ${esc(now)}${scope ? ' · ' + scope : ''}</span>
+        <span>Records: ${list.length}</span>
+      </div>`;
+    window.print();
+  }
+
+  function printActivePawns() {
+    const active = getActivePawns();
+    const total = active.reduce((s, r) => s + Number(r.principal_amount || 0), 0);
+    const today = new Date();
+    const toDate = (s) => s ? new Date(s + 'T00:00:00') : null;
+    const now = today.toLocaleString('en-PH');
+    const user = Auth.currentUserRecord();
+    const branch = DB.getMeta('branch_name') || '';
+
+    const rowsHtml = active.sort((a, b) => String(b.date||'').localeCompare(String(a.date||'')))
+      .map(r => {
+        const d = toDate(r.date);
+        const days = d ? Math.max(0, Math.floor((today - d)/86400000)) : '—';
+        return `<tr>
+          <td>${esc(r.pt_no)}</td><td>${esc(fmtDate(r.date))}</td>
+          <td>${esc(r.item_description)}</td><td class="numeric">${fmt(r.principal_amount)}</td>
+          <td>${esc(r.transaction_type)}</td><td class="numeric">${days === '—' ? '—' : days+'d'}</td>
+        </tr>`;
+      }).join('') || '<tr><td colspan="6" style="text-align:center;padding:20px">No active pawns</td></tr>';
+
+    $('printArea').innerHTML = `
+      <div class="print-title">Active Pawns Report</div>
+      <div class="print-branch">
+        <span class="pb-item">Branch Name: <span class="pb-line">${esc(branch)}</span></span>
+        <span class="pb-item">User: <span class="pb-line">${esc(user?.full_name || '')}</span></span>
+      </div>
+      <table class="print-table">
+        <thead><tr>
+          <th style="width:10%">PT No.</th><th style="width:12%">Entry Date</th>
+          <th style="width:38%">Item Description</th><th style="width:15%">Principal Amount</th>
+          <th style="width:13%">Type</th><th style="width:12%">Days in Vault</th>
+        </tr></thead>
+        <tbody>${rowsHtml}</tbody>
+        <tfoot><tr><td colspan="3" style="text-align:right">TOTAL PRINCIPAL</td><td class="numeric">${fmt(total)}</td><td colspan="2"></td></tr></tfoot>
+      </table>
+      <div class="print-meta">
+        <span>Printed: ${esc(now)}</span><span>Active pawns: ${active.length}</span>
+      </div>`;
+    window.print();
+  }
+
+  // ---- Idle logout hook ----
+  function onIdleLogout() {
+    showScreen('loginScreen');
+    $('loginUsername').value = '';
+    $('loginPassword').value = '';
+    $('loginDbName').textContent = DB.getFileName() || '(in-memory)';
+    toast('Signed out due to inactivity', 'error');
+  }
+
+  // ---- Init ----
+  async function init() {
+    $('footerYear').textContent = new Date().getFullYear();
+    try {
+      await DB.init();
+    } catch (err) {
+      document.body.innerHTML = `<div style="padding:40px;font-family:sans-serif;color:#9b2c2c">
+        <h2>Failed to load database engine</h2>
+        <p>${esc(err.message || err)}</p>
+        <p>Make sure the <code>lib/</code> folder is present alongside <code>index.html</code>.</p>
+      </div>`;
+      return;
+    }
+
+    setupDbScreen();
+    setupSetupScreen();
+    setupLoginScreen();
+    setupBranchInput();
+    setupTabs();
+    setupEntryForm();
+    setupExitForm();
+    setupRowActions();
+    setupSearchAndSort();
+    setupDbToolbar();
+    setupUserMenu();
+    setupUsersTab();
+    setupDashboard();
+    setupPrint();
+
+    showScreen('dbScreen');
+  }
+
+  return { init, onIdleLogout };
 })();
+
+window.addEventListener('DOMContentLoaded', App.init);

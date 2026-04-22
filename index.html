@@ -3,13 +3,112 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Vault Transaction Ledger</title>
+<title>Vault Transaction Ledger v2</title>
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,600;0,9..144,700;1,9..144,400&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="css/style.css">
+<link rel="stylesheet" href="css/auth.css">
 </head>
 <body>
+
+<!-- ============================================================
+     LOADING SCREEN — shown while sql.js initializes
+     ============================================================ -->
+<div id="loadingScreen" class="loading-screen">
+  <div class="loader-spinner"></div>
+  <div class="loader-text">Loading database engine…</div>
+</div>
+
+<!-- ============================================================
+     NO-DB SCREEN — no database file yet, prompt to open/create
+     ============================================================ -->
+<div id="dbScreen" class="auth-screen" style="display:none">
+  <div class="auth-card">
+    <div class="auth-brand">
+      <h1>Vault Ledger</h1>
+      <span class="auth-sub">v2 · SQLite edition</span>
+    </div>
+    <h2>Welcome</h2>
+    <p class="auth-intro">Choose a database to get started. Each PC keeps its own <code>.db</code> file.</p>
+    <div class="auth-actions-stacked">
+      <button class="btn btn-primary btn-lg" id="btnCreateDb">Create New Database</button>
+      <button class="btn btn-secondary btn-lg" id="btnOpenDb">Open Existing Database…</button>
+    </div>
+    <div class="auth-hint" id="dbHint">Your database is saved as a file on this computer. It never leaves this PC.</div>
+  </div>
+</div>
+
+<!-- ============================================================
+     ADMIN SETUP SCREEN — first run, no users yet
+     ============================================================ -->
+<div id="setupScreen" class="auth-screen" style="display:none">
+  <div class="auth-card">
+    <div class="auth-brand">
+      <h1>Vault Ledger</h1>
+      <span class="auth-sub">First-time setup</span>
+    </div>
+    <h2>Create Admin Account</h2>
+    <p class="auth-intro">This is the first user on this database and will have full admin rights.</p>
+    <form id="setupForm" autocomplete="off">
+      <div class="auth-field">
+        <label for="setupFullName">Full Name</label>
+        <input type="text" id="setupFullName" required autocomplete="off">
+      </div>
+      <div class="auth-field">
+        <label for="setupUsername">Username</label>
+        <input type="text" id="setupUsername" required autocomplete="off" minlength="3" maxlength="32" title="3-32 chars. Letters, numbers, _ . - only.">
+      </div>
+      <div class="auth-field">
+        <label for="setupPassword">Password</label>
+        <input type="password" id="setupPassword" required minlength="8" autocomplete="new-password">
+        <div class="field-hint">Minimum 8 characters.</div>
+      </div>
+      <div class="auth-field">
+        <label for="setupPasswordConfirm">Confirm Password</label>
+        <input type="password" id="setupPasswordConfirm" required minlength="8" autocomplete="new-password">
+      </div>
+      <div class="auth-error" id="setupError"></div>
+      <button type="submit" class="btn btn-primary btn-lg btn-full">Create Admin &amp; Continue</button>
+    </form>
+  </div>
+</div>
+
+<!-- ============================================================
+     LOGIN SCREEN
+     ============================================================ -->
+<div id="loginScreen" class="auth-screen" style="display:none">
+  <div class="auth-card">
+    <div class="auth-brand">
+      <h1>Vault Ledger</h1>
+      <span class="auth-sub">Sign in</span>
+    </div>
+    <div class="auth-dbline">
+      <span class="auth-dbline-label">Database:</span>
+      <span class="auth-dbline-name" id="loginDbName">—</span>
+      <button type="button" class="link-btn" id="loginSwitchDb">Change</button>
+    </div>
+    <form id="loginForm" autocomplete="off">
+      <div class="auth-field">
+        <label for="loginUsername">Username</label>
+        <input type="text" id="loginUsername" required autocomplete="username">
+      </div>
+      <div class="auth-field">
+        <label for="loginPassword">Password</label>
+        <input type="password" id="loginPassword" required autocomplete="current-password">
+      </div>
+      <div class="auth-error" id="loginError"></div>
+      <button type="submit" class="btn btn-primary btn-lg btn-full">Sign In</button>
+    </form>
+    <div class="auth-hint">Forgot your password? Ask an admin to reset it.</div>
+  </div>
+</div>
+
+<!-- ============================================================
+     MAIN APP (hidden until logged in)
+     ============================================================ -->
+<div id="appScreen" style="display:none">
 
 <header class="app-header no-print">
   <div class="header-row">
@@ -18,11 +117,21 @@
       <span class="sub">Prenda · Renewal · Redemption · Re-appraisal</span>
     </div>
     <div class="toolbar">
-      <button id="btnNew" title="Start a fresh database">New</button>
-      <button id="btnOpen" title="Open an existing .json database file">Open…</button>
-      <button id="btnSave" class="primary" title="Save to current file (Ctrl+S)">Save</button>
-      <button id="btnSaveAs" title="Save to a new file">Save As…</button>
-      <button id="btnExport" title="Download a copy as JSON">Export</button>
+      <button id="btnSaveDb" class="primary" title="Save database file (Ctrl+S)">Save DB</button>
+      <button id="btnSaveDbAs" title="Save as a new file">Save As…</button>
+      <button id="btnExportDb" title="Download a copy of the database">Export</button>
+      <div class="user-chip" id="userChip" title="Click to see menu">
+        <span class="user-chip-avatar" id="userChipAvatar">?</span>
+        <span class="user-chip-name">
+          <span class="user-chip-fullname" id="userChipName">User</span>
+          <span class="user-chip-role" id="userChipRole">—</span>
+        </span>
+        <span class="user-chip-caret">▾</span>
+        <div class="user-menu" id="userMenu">
+          <button class="user-menu-item" id="menuChangePassword">Change Password</button>
+          <button class="user-menu-item" id="menuLogout">Sign Out</button>
+        </div>
+      </div>
     </div>
   </div>
 </header>
@@ -30,24 +139,18 @@
 <div class="branch-bar no-print">
   <label for="branchName">Branch Name</label>
   <input id="branchName" type="text" placeholder="Enter branch name…" autocomplete="off">
-  <label for="userName">User Name</label>
-  <input id="userName" type="text" placeholder="Enter user name…" autocomplete="off">
   <div class="status-indicator" id="statusIndicator">
     <span class="dot"></span>
-    <span id="statusText">No file loaded · autosaved locally</span>
+    <span id="statusText">Database loaded</span>
   </div>
 </div>
 
-<nav class="tabs no-print">
-  <button class="active" data-tab="dashboard">
-    Dashboard
-  </button>
-  <button data-tab="entry">
-    Vault Entry <span class="sub">(Prenda)</span> <span class="count" id="entryCount">0</span>
-  </button>
-  <button data-tab="exit">
-    Vault Exit <span class="sub">(Ren / Red / Re-app)</span> <span class="count" id="exitCount">0</span>
-  </button>
+<nav class="tabs no-print" id="mainTabs">
+  <button class="active" data-tab="dashboard">Dashboard</button>
+  <button data-tab="entry">Vault Entry <span class="sub">(Prenda)</span> <span class="count" id="entryCount">0</span></button>
+  <button data-tab="exit">Vault Exit <span class="sub">(Ren / Red / Re-app)</span> <span class="count" id="exitCount">0</span></button>
+  <button data-tab="users" data-requires-role="admin">Users</button>
+  <button data-tab="audit" data-requires-role="admin,supervisor">Audit Log</button>
 </nav>
 
 <main>
@@ -56,7 +159,7 @@
 <section id="dashboardPanel" class="tab-panel active">
   <div class="dash-filter-bar no-print">
     <div class="dash-title">
-      <h2>Overview</h2>
+      <h2>Overview <span id="dashScope" class="dash-scope"></span></h2>
       <span class="dash-subtitle" id="dashSubtitle">All time</span>
     </div>
     <div class="dash-controls">
@@ -72,17 +175,16 @@
     </div>
   </div>
 
-  <!-- KPI CARDS -->
   <div class="kpi-grid">
     <div class="kpi-card" data-kind="entries">
       <div class="kpi-label">Total Entries</div>
       <div class="kpi-value" id="kpiEntries">0</div>
-      <div class="kpi-sub" id="kpiEntriesSub">transactions</div>
+      <div class="kpi-sub">transactions</div>
     </div>
     <div class="kpi-card" data-kind="exits">
       <div class="kpi-label">Total Exits</div>
       <div class="kpi-value" id="kpiExits">0</div>
-      <div class="kpi-sub" id="kpiExitsSub">transactions</div>
+      <div class="kpi-sub">transactions</div>
     </div>
     <div class="kpi-card" data-kind="in">
       <div class="kpi-label">Principal In</div>
@@ -106,7 +208,6 @@
     </div>
   </div>
 
-  <!-- CHART ROW: Donuts -->
   <div class="chart-row">
     <div class="chart-card">
       <div class="chart-header">
@@ -114,7 +215,7 @@
         <span class="chart-sub" id="donutEntryTotal">0 total</span>
       </div>
       <div class="donut-wrap">
-        <svg class="donut" viewBox="0 0 200 200" id="donutEntry" role="img" aria-label="Entry type breakdown"></svg>
+        <svg class="donut" viewBox="0 0 200 200" id="donutEntry" role="img"></svg>
         <div class="donut-legend" id="donutEntryLegend"></div>
       </div>
     </div>
@@ -124,13 +225,12 @@
         <span class="chart-sub" id="donutExitTotal">0 total</span>
       </div>
       <div class="donut-wrap">
-        <svg class="donut" viewBox="0 0 200 200" id="donutExit" role="img" aria-label="Exit type breakdown"></svg>
+        <svg class="donut" viewBox="0 0 200 200" id="donutExit" role="img"></svg>
         <div class="donut-legend" id="donutExitLegend"></div>
       </div>
     </div>
   </div>
 
-  <!-- LINE CHART -->
   <div class="chart-card full">
     <div class="chart-header">
       <h3>Daily Volume Trend</h3>
@@ -139,14 +239,13 @@
         <button class="toggle-btn" data-metric="amount">Amount</button>
       </div>
     </div>
-    <svg class="line-chart" id="lineChart" viewBox="0 0 900 280" preserveAspectRatio="none" role="img" aria-label="Daily trend"></svg>
+    <svg class="line-chart" id="lineChart" viewBox="0 0 900 280" preserveAspectRatio="none" role="img"></svg>
     <div class="chart-legend-inline">
       <span class="swatch-inline entry"></span> Entries
       <span class="swatch-inline exit"></span> Exits
     </div>
   </div>
 
-  <!-- ACTIVE PAWNS TABLE -->
   <div class="table-section">
     <div class="table-header no-print">
       <h3 class="table-title">Active Pawns <span class="count" id="activeCount">0</span></h3>
@@ -178,15 +277,15 @@
       </table>
     </div>
     <div class="hint" style="padding:10px 18px;">
-      <strong>Active Pawn definition:</strong> A PT No. that appears in Entries but has NOT been redeemed (no matching Exit with type <em>Red</em>).
+      <strong>Active Pawn:</strong> a PT No. present in Entries with no matching <em>Red</em> (Redemption) exit.
     </div>
   </div>
 </section>
 
 <!-- =========== ENTRY TAB =========== -->
 <section id="entryPanel" class="tab-panel">
-  <div class="form-card no-print">
-    <h2 id="entryFormTitle">Add Vault Entry</h2>
+  <div class="form-card no-print" data-requires-write="entry">
+    <h2>Add Vault Entry</h2>
     <form id="entryForm" autocomplete="off">
       <div class="form-grid entry-grid">
         <div class="field">
@@ -222,7 +321,7 @@
           <input type="text" id="e_sig" placeholder="Initials / name">
         </div>
         <div class="form-actions">
-          <button type="submit" class="btn btn-primary" id="entrySubmitBtn">Add Entry</button>
+          <button type="submit" class="btn btn-primary">Add Entry</button>
           <button type="button" class="btn btn-secondary" id="entryResetBtn">Clear</button>
         </div>
       </div>
@@ -231,7 +330,7 @@
 
   <div class="table-section">
     <div class="table-header no-print">
-      <h3 class="table-title">Vault Entry Records</h3>
+      <h3 class="table-title">Vault Entry Records <span id="entryScopeBadge" class="scope-badge"></span></h3>
       <div class="table-controls">
         <input type="search" class="search-input" id="entrySearch" placeholder="Search entries…">
         <button class="btn btn-secondary" id="entryPrintBtn">🖨 Print</button>
@@ -242,11 +341,12 @@
         <thead>
           <tr>
             <th data-sort="date" data-type="date">Date <span class="sort-ind">↕</span></th>
-            <th data-sort="ptNo">PT No. <span class="sort-ind">↕</span></th>
-            <th data-sort="itemDescription">Item Description <span class="sort-ind">↕</span></th>
-            <th data-sort="principalAmount" data-type="number" class="numeric" style="text-align:right">Principal Amount <span class="sort-ind">↕</span></th>
-            <th data-sort="transactionType">Type <span class="sort-ind">↕</span></th>
+            <th data-sort="pt_no">PT No. <span class="sort-ind">↕</span></th>
+            <th data-sort="item_description">Item Description <span class="sort-ind">↕</span></th>
+            <th data-sort="principal_amount" data-type="number" class="numeric" style="text-align:right">Principal Amount <span class="sort-ind">↕</span></th>
+            <th data-sort="transaction_type">Type <span class="sort-ind">↕</span></th>
             <th data-sort="signature">Signature <span class="sort-ind">↕</span></th>
+            <th data-sort="created_by_name" class="scope-visible">Created By <span class="sort-ind">↕</span></th>
             <th style="text-align:right">Actions</th>
           </tr>
         </thead>
@@ -255,7 +355,7 @@
           <tr>
             <td colspan="3" style="text-align:right">Total</td>
             <td class="numeric" id="entryTotal">0.00</td>
-            <td colspan="3"></td>
+            <td colspan="4"></td>
           </tr>
         </tfoot>
       </table>
@@ -265,8 +365,8 @@
 
 <!-- =========== EXIT TAB =========== -->
 <section id="exitPanel" class="tab-panel">
-  <div class="form-card no-print">
-    <h2 id="exitFormTitle">Add Vault Exit</h2>
+  <div class="form-card no-print" data-requires-write="exit">
+    <h2>Add Vault Exit</h2>
     <form id="exitForm" autocomplete="off">
       <div class="form-grid exit-grid">
         <div class="field">
@@ -301,7 +401,7 @@
           <input type="time" id="x_time" required>
         </div>
         <div class="form-actions">
-          <button type="submit" class="btn btn-primary" id="exitSubmitBtn">Add Exit</button>
+          <button type="submit" class="btn btn-primary">Add Exit</button>
           <button type="button" class="btn btn-secondary" id="exitResetBtn">Clear</button>
         </div>
       </div>
@@ -310,7 +410,7 @@
 
   <div class="table-section">
     <div class="table-header no-print">
-      <h3 class="table-title">Vault Exit Records</h3>
+      <h3 class="table-title">Vault Exit Records <span id="exitScopeBadge" class="scope-badge"></span></h3>
       <div class="table-controls">
         <input type="search" class="search-input" id="exitSearch" placeholder="Search exits…">
         <button class="btn btn-secondary" id="exitPrintBtn">🖨 Print</button>
@@ -320,12 +420,13 @@
       <table class="ledger" id="exitTable">
         <thead>
           <tr>
-            <th data-sort="ptNo">PT No. <span class="sort-ind">↕</span></th>
-            <th data-sort="loanDate" data-type="date">Loan Date <span class="sort-ind">↕</span></th>
-            <th data-sort="itemDescription">Item Description <span class="sort-ind">↕</span></th>
-            <th data-sort="principalAmount" data-type="number" class="numeric" style="text-align:right">Principal Amount <span class="sort-ind">↕</span></th>
-            <th data-sort="transactionType">Type <span class="sort-ind">↕</span></th>
-            <th data-sort="timeOfTransaction">Time <span class="sort-ind">↕</span></th>
+            <th data-sort="pt_no">PT No. <span class="sort-ind">↕</span></th>
+            <th data-sort="loan_date" data-type="date">Loan Date <span class="sort-ind">↕</span></th>
+            <th data-sort="item_description">Item Description <span class="sort-ind">↕</span></th>
+            <th data-sort="principal_amount" data-type="number" class="numeric" style="text-align:right">Principal Amount <span class="sort-ind">↕</span></th>
+            <th data-sort="transaction_type">Type <span class="sort-ind">↕</span></th>
+            <th data-sort="time_of_transaction">Time <span class="sort-ind">↕</span></th>
+            <th data-sort="created_by_name" class="scope-visible">Created By <span class="sort-ind">↕</span></th>
             <th style="text-align:right">Actions</th>
           </tr>
         </thead>
@@ -334,9 +435,93 @@
           <tr>
             <td colspan="3" style="text-align:right">Total</td>
             <td class="numeric" id="exitTotal">0.00</td>
-            <td colspan="3"></td>
+            <td colspan="4"></td>
           </tr>
         </tfoot>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- =========== USERS TAB (Admin only) =========== -->
+<section id="usersPanel" class="tab-panel">
+  <div class="form-card no-print">
+    <h2>Add New User</h2>
+    <form id="newUserForm" autocomplete="off">
+      <div class="form-grid users-grid">
+        <div class="field">
+          <label for="nu_fullname">Full Name</label>
+          <input type="text" id="nu_fullname" required>
+        </div>
+        <div class="field">
+          <label for="nu_username">Username</label>
+          <input type="text" id="nu_username" required minlength="3" maxlength="32" title="3-32 chars. Letters, numbers, _ . - only.">
+        </div>
+        <div class="field">
+          <label for="nu_role">Role</label>
+          <select id="nu_role" required>
+            <option value="admin">Admin</option>
+            <option value="supervisor">Supervisor</option>
+            <option value="encoder" selected>Encoder</option>
+            <option value="viewer">Viewer</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="nu_password">Initial Password</label>
+          <input type="password" id="nu_password" required minlength="8" autocomplete="new-password">
+        </div>
+        <div class="form-actions">
+          <button type="submit" class="btn btn-primary">Create User</button>
+          <button type="button" class="btn btn-secondary" id="newUserResetBtn">Clear</button>
+        </div>
+      </div>
+    </form>
+  </div>
+
+  <div class="table-section">
+    <div class="table-header">
+      <h3 class="table-title">Users <span class="count" id="usersCount">0</span></h3>
+    </div>
+    <div class="ledger-wrap">
+      <table class="ledger" id="usersTable">
+        <thead>
+          <tr>
+            <th>Username</th>
+            <th>Full Name</th>
+            <th>Role</th>
+            <th>Status</th>
+            <th>Created</th>
+            <th>Last Login</th>
+            <th style="text-align:right">Actions</th>
+          </tr>
+        </thead>
+        <tbody id="usersTbody"></tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- =========== AUDIT LOG TAB =========== -->
+<section id="auditPanel" class="tab-panel">
+  <div class="table-section">
+    <div class="table-header">
+      <h3 class="table-title">Audit Log <span class="count" id="auditCount">0</span></h3>
+      <div class="table-controls">
+        <input type="search" class="search-input" id="auditSearch" placeholder="Search audit log…">
+      </div>
+    </div>
+    <div class="ledger-wrap">
+      <table class="ledger" id="auditTable">
+        <thead>
+          <tr>
+            <th>When</th>
+            <th>User</th>
+            <th>Action</th>
+            <th>Target</th>
+            <th>Details</th>
+          </tr>
+        </thead>
+        <tbody id="auditTbody"></tbody>
       </table>
     </div>
   </div>
@@ -346,6 +531,55 @@
 
 <!-- ========= PRINT AREA ========= -->
 <div class="print-area print-only" id="printArea"></div>
+
+<!-- ========= CHANGE PASSWORD DIALOG ========= -->
+<dialog class="modal" id="changePasswordDialog">
+  <div class="modal-content">
+    <h3>Change Password</h3>
+    <form id="changePasswordForm" autocomplete="off">
+      <div class="auth-field">
+        <label for="cp_current">Current Password</label>
+        <input type="password" id="cp_current" required autocomplete="current-password">
+      </div>
+      <div class="auth-field">
+        <label for="cp_new">New Password</label>
+        <input type="password" id="cp_new" required minlength="8" autocomplete="new-password">
+      </div>
+      <div class="auth-field">
+        <label for="cp_confirm">Confirm New Password</label>
+        <input type="password" id="cp_confirm" required minlength="8" autocomplete="new-password">
+      </div>
+      <div class="auth-error" id="changePasswordError"></div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-secondary" id="cpCancel">Cancel</button>
+        <button type="submit" class="btn btn-primary">Change Password</button>
+      </div>
+    </form>
+  </div>
+</dialog>
+
+<!-- ========= RESET USER PASSWORD (admin) ========= -->
+<dialog class="modal" id="resetPasswordDialog">
+  <div class="modal-content">
+    <h3>Reset Password</h3>
+    <p>Reset password for <strong id="rpUsername">—</strong></p>
+    <form id="resetPasswordForm" autocomplete="off">
+      <div class="auth-field">
+        <label for="rp_new">New Password</label>
+        <input type="password" id="rp_new" required minlength="8" autocomplete="new-password">
+      </div>
+      <div class="auth-field">
+        <label for="rp_confirm">Confirm New Password</label>
+        <input type="password" id="rp_confirm" required minlength="8" autocomplete="new-password">
+      </div>
+      <div class="auth-error" id="resetPasswordError"></div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-secondary" id="rpCancel">Cancel</button>
+        <button type="submit" class="btn btn-primary">Reset Password</button>
+      </div>
+    </form>
+  </div>
+</dialog>
 
 <!-- ========= CONFIRM DIALOG ========= -->
 <dialog class="modal" id="confirmDialog">
@@ -361,10 +595,16 @@
 
 <div class="toast" id="toast"></div>
 
+</div><!-- /#appScreen -->
+
 <footer class="app-footer no-print">
   &copy; <span id="footerYear">2026</span> JRevis. All rights reserved.
 </footer>
 
+<!-- Load sql.js first, then our modules -->
+<script src="lib/sql-wasm.js"></script>
+<script src="js/db.js"></script>
+<script src="js/auth.js"></script>
 <script src="js/app.js"></script>
 </body>
 </html>

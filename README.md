@@ -1,83 +1,117 @@
-# Vault Transaction Ledger
+# Vault Transaction Ledger — v2 (SQLite + Multi-User)
 
-A single-user local forms system for recording Vault Entry (Prenda) and
-Vault Exit (Renewal/Redemption/Re-appraisal) transactions. No XAMPP, no
-backend — just HTML, CSS, JS, and a JSON file as the database.
+A single-PC, multi-user vault ledger with login, role-based permissions,
+and SQLite for storage. Still fully offline, no server, no XAMPP.
 
 ## Folder structure
 
 ```
-vault-ledger/
-├── index.html              ← open this in Chrome / Edge
+vault-ledger-v2/
+├── index.html
 ├── css/
-│   └── style.css
+│   ├── style.css
+│   └── auth.css
 ├── js/
-│   └── app.js
-└── data/
-    └── sample-vault-data.json   ← optional: sample DB to test Open
+│   ├── db.js        — SQLite wrapper
+│   ├── auth.js      — login, hashing, permissions
+│   └── app.js       — UI, tabs, forms, dashboard
+├── lib/
+│   ├── sql-wasm.js  — sql.js loader (official)
+│   ├── sql-wasm.wasm — SQLite compiled to WebAssembly
+│   └── LICENSE-sql.js
+├── data/            — your .db files go here (optional)
+└── README.md
 ```
 
-## How to run
+## Requirements
 
-1. Double-click `index.html`. It opens in your default browser.
-2. For best experience, open it in **Chrome, Edge, or Brave** (File
-   System Access API is supported — real read/write to a .json file).
-3. Firefox / Safari still work, but file save falls back to a download.
+- **Chrome, Edge, or Brave** (Chromium-based) for full experience — File System Access API gives real read/write to `.db`
+- Firefox / Safari work too but Save falls back to Download
+- **No internet required** after initial load (fonts come from Google Fonts — if you need truly offline, see "Full offline" below)
 
-## First-time workflow
+## Important: Launch via a local HTTP server
 
-1. Type the **Branch Name** at the top.
-2. Fill in the form and click **Add Entry** (or **Add Exit** on the
-   other tab). The record appears in the table below.
-3. Click **Save As…** → choose where to save `data.json`. This is now
-   your "database" file.
-4. Next time you open the app, click **Open…** → pick your saved
-   `.json` file → continue where you left off.
-5. Press `Ctrl+S` anytime to save to the current file.
-6. Click **🖨 Print** to print a report that matches the original paper
-   form layout.
+The SQLite engine (sql.js) loads a WebAssembly file (`sql-wasm.wasm`). Browsers refuse to load WASM from a `file://` URL for security reasons. You must serve the folder through a tiny local HTTP server. Three easy options:
+
+**Option 1 — Python (already installed on most PCs):**
+```
+cd vault-ledger-v2
+python -m http.server 8000
+```
+Then open `http://localhost:8000` in your browser.
+
+**Option 2 — VS Code Live Server extension:**
+Install the "Live Server" extension, then right-click `index.html` → "Open with Live Server."
+
+**Option 3 — Node.js (if you have it):**
+```
+npx serve vault-ledger-v2
+```
+
+None of these require XAMPP, Apache, PHP, or MySQL. They're just file servers. You can even shut them down when you're done; the `.db` file stays on your PC.
+
+## First run
+
+1. Double-click `index.html`. Browser opens the app.
+2. You'll see **Welcome** screen. Click **Create New Database** → an empty SQLite DB is created in memory.
+3. **First-time setup** screen appears — fill in your admin details:
+   - Full Name
+   - Username (3-32 chars, letters / numbers / `_ . -`)
+   - Password (min 8 chars)
+4. Click **Create Admin & Continue**. You're logged in as admin.
+5. **IMPORTANT:** Click **Save As…** in the top bar → save to a `.db` file. Until you save, everything is only in memory and will be lost on close.
+
+## Subsequent runs
+
+1. Open `index.html` again.
+2. Click **Open Existing Database…** → pick your `.db` file.
+3. Enter your username + password on the login screen.
+4. Start working.
+
+## Roles
+
+| Role | What they can do |
+|---|---|
+| **Admin** | Everything: manage users, view audit log, see & edit all records |
+| **Supervisor** | See & edit all records, view audit log. Cannot manage users |
+| **Encoder** | See & edit **only their own** records. Cannot manage users |
+| **Viewer** | See all records but read-only |
+
+## Users tab (Admin only)
+
+- Create new users with any role
+- Reset a user's password
+- Enable/disable accounts (disabled users can't sign in)
+- Change a user's role
+- Delete users (records they created stay, credited to "deleted user")
+
+## Audit Log (Admin + Supervisor)
+
+Every sensitive action gets logged: logins, logouts, create/update/delete
+records, user management, password changes/resets. Cannot be edited from
+within the app.
+
+## Data safety
+
+- Every record auto-tags the creator and creation time
+- Edits add updater + update time
+- Passwords are PBKDF2-hashed (100k iterations, random salt per user)
+- Session auto-logs out after 30 minutes of inactivity
+- Browser warns you if you close with unsaved changes
+
+## Limits to know
+
+Because there's no backend:
+- Security depends on physical protection of the `.db` file — anyone with the file and time can attempt offline password cracking
+- Role-based UI is a workflow guardrail, not a defense against a technically adept malicious user with DevTools
+- This setup is ideal for **trusted employees in a controlled branch environment**, where the auth system provides accountability and workflow separation
 
 ## Keyboard shortcuts
 
-- `Ctrl+S` — Save to current file
-- Click any column header — sort by that column (click again = reverse)
+- `Ctrl+S` — Save database to current file
 
-## Safety nets
+## Full offline
 
-- Autosave to browser **localStorage** every time you make a change. If
-  you forget to save and close the tab, data is restored on next open.
-- A red dot in the status bar warns you about unsaved changes.
-- Browser shows a "leave page?" prompt if you close with unsaved work.
-
-## Data file format
-
-```json
-{
-  "branchName": "Your Branch",
-  "userName": "Your Name",
-  "entries": [
-    {
-      "id": "auto-generated",
-      "date": "2026-04-22",
-      "ptNo": "12345",
-      "itemDescription": "...",
-      "principalAmount": 5000.00,
-      "transactionType": "NP",
-      "signature": "JDR"
-    }
-  ],
-  "exits": [
-    {
-      "id": "auto-generated",
-      "ptNo": "12345",
-      "loanDate": "2026-03-10",
-      "itemDescription": "...",
-      "principalAmount": 2500.00,
-      "transactionType": "Red",
-      "timeOfTransaction": "14:30"
-    }
-  ]
-}
-```
-
-You can back up the whole ledger by just copying the .json file.
+If you want to run this without any internet whatsoever, edit `index.html`
+and remove the three `<link>` tags pointing to `fonts.googleapis.com`.
+The app will fall back to system fonts (still perfectly usable, just less styled).
