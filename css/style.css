@@ -30,9 +30,15 @@ html, body {
 
 body {
   min-height: 100vh;
+  display: flex;
+  flex-direction: column;
   background-image:
     radial-gradient(circle at 20% 10%, rgba(138,90,43,0.04), transparent 40%),
     radial-gradient(circle at 80% 80%, rgba(14,26,43,0.03), transparent 40%);
+}
+
+main {
+  flex: 1 0 auto;
 }
 
 /* ===== HEADER ===== */
@@ -218,8 +224,10 @@ nav.tabs button.active .count {
 
 /* ===== MAIN ===== */
 main {
+  flex: 1 0 auto;
   padding: 24px 28px 60px;
   max-width: 1600px;
+  width: 100%;
   margin: 0 auto;
 }
 
@@ -1033,6 +1041,7 @@ dialog.modal .modal-actions {
    FOOTER
    ===================================================================== */
 .app-footer {
+  flex-shrink: 0;
   text-align: center;
   padding: 18px 28px;
   margin-top: 40px;
