@@ -1028,3 +1028,37 @@ dialog.modal .modal-actions {
 .days-badge.fresh  { background: #e8f0e4; color: #2f6f4f; }
 .days-badge.medium { background: #f7f2e4; color: #8a5a2b; }
 .days-badge.old    { background: #f7e4e4; color: #822c2c; }
+
+/* =====================================================================
+   FOOTER
+   ===================================================================== */
+.app-footer {
+  text-align: center;
+  padding: 18px 28px;
+  margin-top: 40px;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+  background: var(--paper-2);
+  border-top: 1px solid var(--rule);
+}
+.app-footer::before {
+  content: '';
+  display: inline-block;
+  width: 24px;
+  height: 1px;
+  background: var(--accent);
+  vertical-align: middle;
+  margin-right: 12px;
+}
+.app-footer::after {
+  content: '';
+  display: inline-block;
+  width: 24px;
+  height: 1px;
+  background: var(--accent);
+  vertical-align: middle;
+  margin-left: 12px;
+}

@@ -981,6 +981,9 @@ function printActivePawns() {
 
 // ----- Init -----
 (function init() {
+  // Footer year
+  $('footerYear').textContent = new Date().getFullYear();
+
   // Set today as default
   const today = new Date().toISOString().slice(0, 10);
   $('e_date').value = today;
